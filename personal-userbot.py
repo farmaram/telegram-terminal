@@ -27,6 +27,7 @@ Quotes
   .quote                same as .q
   .quotly               same as .q
   .q --png              send quote as PNG instead of sticker
+  .q 10                 quote the replied message and next 9 messages
   .q custom text        make a quote from custom text
 
 Bot
@@ -53,6 +54,23 @@ def parse_command(text):
 
     name, _, rest = body.partition(" ")
     return name.lower(), rest.strip()
+
+
+def parse_quote_options(raw):
+    args = raw.split()
+    send_png = False
+    count = 1
+    text_parts = []
+
+    for arg in args:
+        if arg == "--png":
+            send_png = True
+        elif arg.isdigit() and not text_parts:
+            count = max(1, min(20, int(arg)))
+        else:
+            text_parts.append(arg)
+
+    return send_png, count, " ".join(text_parts).strip()
 
 
 def load_quote_font(size, bold=False):
@@ -260,9 +278,7 @@ def author_color(name):
     return colors[sum(name.encode("utf-8", errors="ignore")) % len(colors)]
 
 
-def create_quote_image(author, text, avatar, media_image=None):
-    QUOTE_DIR.mkdir(parents=True, exist_ok=True)
-
+def quote_bubble_image(author, text, avatar, media_image=None):
     name_font = load_quote_font(30, bold=True)
     text_font = load_quote_font(36)
     meta_font = load_quote_font(20)
@@ -329,6 +345,42 @@ def create_quote_image(author, text, avatar, media_image=None):
         font=meta_font,
         fill=(158, 158, 166, 255),
     )
+
+    return image
+
+
+def create_quote_image(author, text, avatar, media_image=None):
+    return create_quote_stack([
+        {
+            "author": author,
+            "text": text,
+            "avatar": avatar,
+            "media_image": media_image,
+        }
+    ])
+
+
+def create_quote_stack(items):
+    QUOTE_DIR.mkdir(parents=True, exist_ok=True)
+    bubbles = [
+        quote_bubble_image(
+            item["author"],
+            item["text"],
+            item["avatar"],
+            item.get("media_image"),
+        )
+        for item in items
+    ]
+    gap = 10
+    width = max(bubble.size[0] for bubble in bubbles)
+    height = sum(bubble.size[1] for bubble in bubbles) + gap * (len(bubbles) - 1)
+
+    image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    y = 0
+
+    for bubble in bubbles:
+        image.alpha_composite(bubble, (0, y))
+        y += bubble.size[1] + gap
 
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     path = QUOTE_DIR / f"quote-{stamp}.png"
@@ -409,38 +461,62 @@ async def forwarded_sender(reply):
     return None, None
 
 
-async def quote_message(event, custom_text=""):
-    send_png = False
-
-    if custom_text.startswith("--png"):
-        send_png = True
-        custom_text = custom_text[5:].strip()
-
-    reply = await event.get_reply_message()
-
-    media_image = None
-
-    if custom_text:
-        text = custom_text
-        sender = await event.get_sender()
-        author = display_name(sender)
-        avatar_sender = sender
-    elif reply:
-        text = reply.raw_text or ""
-        sender = await reply.get_sender()
-        forwarded_entity, forwarded_name = await forwarded_sender(reply)
-        author = forwarded_name or display_name(sender)
-        avatar_sender = forwarded_entity or sender
-        media_image = await get_quote_media(reply)
-    else:
-        await event.reply(tg_code("Reply to a message with .q, or use: .q custom text"))
-        return
+async def build_quote_item(message):
+    text = message.raw_text or ""
+    sender = await message.get_sender()
+    forwarded_entity, forwarded_name = await forwarded_sender(message)
+    author = forwarded_name or display_name(sender)
+    avatar_sender = forwarded_entity or sender
+    media_image = await get_quote_media(message)
 
     if not text.strip() and media_image is None:
         text = "[unsupported media]"
 
     avatar = await get_sender_avatar(avatar_sender, author)
-    png_path = create_quote_image(author, text, avatar, media_image=media_image)
+    return {
+        "author": author,
+        "text": text,
+        "avatar": avatar,
+        "media_image": media_image,
+    }
+
+
+async def collect_quote_messages(event, reply, count):
+    if count <= 1:
+        return [reply]
+
+    messages = [reply]
+    min_id = reply.id
+    max_id = reply.id + count + 25
+
+    async for message in client.iter_messages(event.chat_id, min_id=min_id, max_id=max_id, reverse=True):
+        if message.id <= reply.id:
+            continue
+
+        messages.append(message)
+
+        if len(messages) >= count:
+            break
+
+    return messages
+
+
+async def quote_message(event, raw_options=""):
+    send_png, count, custom_text = parse_quote_options(raw_options)
+    reply = await event.get_reply_message()
+
+    if custom_text:
+        sender = await event.get_sender()
+        author = display_name(sender)
+        avatar = await get_sender_avatar(sender, author)
+        png_path = create_quote_image(author, custom_text, avatar)
+    elif reply:
+        messages = await collect_quote_messages(event, reply, count)
+        items = [await build_quote_item(message) for message in messages]
+        png_path = create_quote_stack(items)
+    else:
+        await event.reply(tg_code("Reply to a message with .q, or use: .q custom text"))
+        return
 
     if send_png:
         await event.reply(file=str(png_path))
