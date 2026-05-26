@@ -53,7 +53,7 @@ Install system packages first. Package names vary by distro, but you need:
 Clone and install:
 
 ```bash
-git clone <YOUR_REPO_URL>
+git clone https://github.com/farmei/personal-userbot.git
 cd quotly-userbot
 python3 -m venv remoteenv
 source remoteenv/bin/activate
@@ -81,7 +81,7 @@ pkg install python git freetype libjpeg-turbo zlib ffmpeg clang make pkg-config
 Clone and install:
 
 ```bash
-git clone <YOUR_REPO_URL>
+git clone https://github.com/farmei/personal-userbot.git
 cd quotly-userbot
 python -m venv remoteenv
 source remoteenv/bin/activate
