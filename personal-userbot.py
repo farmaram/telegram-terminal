@@ -2,6 +2,7 @@ import asyncio
 import os
 import subprocess
 import re
+import unicodedata
 import textwrap
 from datetime import datetime
 from pathlib import Path
@@ -96,6 +97,112 @@ def load_quote_font(size, bold=False):
                 pass
 
     return ImageFont.load_default()
+
+
+def load_extra_font(size, paths):
+    for path in paths:
+        candidate = Path(path)
+
+        if candidate.is_file():
+            try:
+                return ImageFont.truetype(str(candidate), size=size)
+            except Exception:
+                pass
+
+    return None
+
+
+def load_font_stack(size, bold=False):
+    fonts = [load_quote_font(size, bold=bold)]
+    symbol_font = load_extra_font(size, [
+        "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansSymbols-Regular.ttf",
+        "/usr/share/fonts/truetype/ancient-scripts/Symbola_hint.ttf",
+        "/data/data/com.termux/files/usr/share/fonts/TTF/NotoSansSymbols2-Regular.ttf",
+    ])
+    emoji_font = load_extra_font(size, [
+        "/system/fonts/NotoColorEmoji.ttf",
+        "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+        "/usr/share/fonts/noto/NotoColorEmoji.ttf",
+        "/data/data/com.termux/files/usr/share/fonts/TTF/NotoColorEmoji.ttf",
+    ])
+
+    for font in (symbol_font, emoji_font):
+        if font is not None:
+            fonts.append(font)
+
+    return fonts
+
+
+def is_emoji_char(char):
+    if not char:
+        return False
+
+    codepoint = ord(char)
+    return (
+        0x1F000 <= codepoint <= 0x1FAFF or
+        0x2600 <= codepoint <= 0x27BF or
+        codepoint in {0x00A9, 0x00AE, 0x3030, 0x303D}
+    )
+
+
+def is_joining_char(char):
+    return char in {"\ufe0e", "\ufe0f", "\u200d"} or unicodedata.combining(char) != 0
+
+
+def char_font(char, fonts):
+    if len(fonts) > 1 and is_emoji_char(char):
+        return fonts[-1]
+
+    return fonts[0]
+
+
+def char_size(draw, char, font):
+    if is_joining_char(char):
+        return 0, 0
+
+    box = draw.textbbox((0, 0), char, font=font)
+    return box[2] - box[0], box[3] - box[1]
+
+
+def rich_text_size(draw, text, fonts, spacing=8):
+    widths = []
+    heights = []
+
+    for line in text.splitlines() or [""]:
+        width = 0
+        height = 0
+
+        for char in line:
+            font = char_font(char, fonts)
+            char_w, char_h = char_size(draw, char, font)
+            width += char_w
+            height = max(height, char_h)
+
+        widths.append(width)
+        heights.append(height or char_size(draw, " ", fonts[0])[1])
+
+    return max(widths or [0]), sum(heights) + spacing * max(0, len(heights) - 1)
+
+
+def draw_rich_text(draw, xy, text, fonts, fill, spacing=8):
+    x, y = xy
+    cursor_y = y
+
+    for line in text.splitlines() or [""]:
+        cursor_x = x
+        line_height = rich_text_size(draw, line, fonts, spacing=0)[1]
+
+        for char in line:
+            if is_joining_char(char):
+                continue
+
+            font = char_font(char, fonts)
+            draw.text((cursor_x, cursor_y), char, font=font, fill=fill)
+            char_w, _ = char_size(draw, char, font)
+            cursor_x += char_w
+
+        cursor_y += line_height + spacing
 
 
 def avatar_initials(name):
@@ -279,8 +386,8 @@ def author_color(name):
 
 
 def quote_bubble_image(author, text, avatar, media_image=None):
-    name_font = load_quote_font(30, bold=True)
-    text_font = load_quote_font(36)
+    name_fonts = load_font_stack(30, bold=True)
+    text_fonts = load_font_stack(36)
     meta_font = load_quote_font(20)
 
     text = fit_quote_text(text)
@@ -290,8 +397,8 @@ def quote_bubble_image(author, text, avatar, media_image=None):
 
     dummy = Image.new("RGBA", (1, 1))
     draw = ImageDraw.Draw(dummy)
-    text_w, text_h = multiline_size(draw, wrapped, text_font, spacing=10) if wrapped else (0, 0)
-    name_w, name_h = multiline_size(draw, author, name_font, spacing=0)
+    text_w, text_h = rich_text_size(draw, wrapped, text_fonts, spacing=10) if wrapped else (0, 0)
+    name_w, name_h = rich_text_size(draw, author, name_fonts, spacing=0)
     media_w, media_h = media.size if media else (0, 0)
     body_w = max(text_w, media_w, name_w, 260)
 
@@ -327,7 +434,7 @@ def quote_bubble_image(author, text, avatar, media_image=None):
 
     x = bubble_x + bubble_pad_x
     y = bubble_y + bubble_pad_y
-    draw.text((x, y), author, font=name_font, fill=author_color(author))
+    draw_rich_text(draw, (x, y), author, name_fonts, fill=author_color(author), spacing=0)
     y += name_h + 14
 
     if media:
@@ -335,7 +442,7 @@ def quote_bubble_image(author, text, avatar, media_image=None):
         y += media.size[1] + content_gap
 
     if wrapped:
-        draw.text((x, y), wrapped, font=text_font, fill=(245, 245, 247, 255), spacing=10)
+        draw_rich_text(draw, (x, y), wrapped, text_fonts, fill=(245, 245, 247, 255), spacing=10)
 
     timestamp = datetime.now().strftime("%H:%M")
     time_box = draw.textbbox((0, 0), timestamp, font=meta_font)

@@ -7,6 +7,7 @@ A personal Telegram userbot for creating Quotly-style quote stickers.
 - Creates quote stickers with `.q`, `.quote` or `.quotly`
 - Uses a dark Quotly-style bubble with transparent sticker background
 - Uses the sender profile photo when available
+- Uses fallback fonts for symbols and emoji when available
 - Tries to use the original author for forwarded messages
 - Embeds static images and stickers inside the quote
 - Uses one static video frame when `ffmpeg` is installed
@@ -50,6 +51,7 @@ Install system packages first. Package names vary by distro, but you need:
 - `pip`
 - FreeType/JPEG/zlib libraries for Pillow
 - `ffmpeg` if you want video quotes
+- an emoji font, such as Noto Color Emoji, for better emoji rendering
 
 Clone and install:
 
