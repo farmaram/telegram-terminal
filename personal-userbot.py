@@ -18,6 +18,7 @@ COMMAND_PREFIX = "."
 QUOTE_DIR = Path("downloads/quotes")
 
 client = TelegramClient(SESSION_NAME, api_id, api_hash)
+AVATAR_CACHE = {}
 
 
 HELP_TEXT = """personal-userbot commands
@@ -124,13 +125,26 @@ def circle_crop(image, size):
 
 async def get_sender_avatar(sender, name, size=104):
     QUOTE_DIR.mkdir(parents=True, exist_ok=True)
-    avatar_path = QUOTE_DIR / f"avatar-{getattr(sender, 'id', 'unknown')}.jpg"
+    sender_id = getattr(sender, "id", None) or name or "unknown"
+    cache_key = (sender_id, name, size)
+
+    if cache_key in AVATAR_CACHE:
+        return AVATAR_CACHE[cache_key].copy()
+
+    avatar_path = QUOTE_DIR / f"avatar-{sender_id}.jpg"
 
     try:
+        if avatar_path.is_file():
+            avatar = circle_crop(Image.open(avatar_path), size)
+            AVATAR_CACHE[cache_key] = avatar
+            return avatar.copy()
+
         downloaded = await client.download_profile_photo(sender, file=str(avatar_path))
 
         if downloaded and Path(downloaded).is_file():
-            return circle_crop(Image.open(downloaded), size)
+            avatar = circle_crop(Image.open(downloaded), size)
+            AVATAR_CACHE[cache_key] = avatar
+            return avatar.copy()
     except Exception as e:
         print(f"Avatar download failed: {e}")
 
@@ -146,7 +160,8 @@ async def get_sender_avatar(sender, name, size=104):
         font=font,
         fill=(255, 255, 255, 255),
     )
-    return avatar
+    AVATAR_CACHE[cache_key] = avatar
+    return avatar.copy()
 
 
 def fit_quote_text(text, max_chars=900):
@@ -400,7 +415,7 @@ def create_quote_sticker(png_path):
     canvas.alpha_composite(image, (x, y))
 
     webp_path = png_path.with_suffix(".webp")
-    canvas.save(webp_path, "WEBP", lossless=True, quality=95, method=6)
+    canvas.save(webp_path, "WEBP", lossless=True, quality=90, method=3)
     return webp_path
 
 
@@ -512,7 +527,7 @@ async def quote_message(event, raw_options=""):
         png_path = create_quote_image(author, custom_text, avatar)
     elif reply:
         messages = await collect_quote_messages(event, reply, count)
-        items = [await build_quote_item(message) for message in messages]
+        items = await asyncio.gather(*(build_quote_item(message) for message in messages))
         png_path = create_quote_stack(items)
     else:
         await event.reply(tg_code("Reply to a message with .q, or use: .q custom text"))
