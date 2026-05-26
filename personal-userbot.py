@@ -27,7 +27,7 @@ Quotes
   .quote                same as .q
   .quotly               same as .q
   .q --png              send quote as PNG instead of sticker
-  .q 10                 quote the replied message and next 9 messages
+  .q N                  quote N messages, max 10
   .q custom text        make a quote from custom text
 
 Bot
@@ -66,7 +66,7 @@ def parse_quote_options(raw):
         if arg == "--png":
             send_png = True
         elif arg.isdigit() and not text_parts:
-            count = max(1, min(20, int(arg)))
+            count = max(1, min(10, int(arg)))
         else:
             text_parts.append(arg)
 

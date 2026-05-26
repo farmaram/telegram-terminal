@@ -17,7 +17,7 @@ A personal Telegram userbot for creating Quotly-style quote stickers.
 - `.quote` same as `.q`
 - `.quotly` same as `.q`
 - `.q --png` sends the quote as PNG instead of sticker
-- `.q 10` quotes the replied message and the next 9 messages below it
+- `.q N` quotes N messages starting from the replied message; max 10
 - `.q custom text` creates a quote from custom text
 - `.phelp` shows help
 - `.pping` checks latency
