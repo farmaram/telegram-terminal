@@ -5,6 +5,7 @@ A personal Telegram userbot for creating Quotly-style quote stickers.
 ## Features
 
 - Creates quote stickers with `.q`, `.quote` or `.quotly`
+- Supports Telegram selected-text replies, quoting only the selected excerpt
 - Uses a dark Quotly-style bubble with transparent sticker background
 - Uses the sender profile photo when available
 - Tries to use the original author for forwarded messages
@@ -19,8 +20,13 @@ A personal Telegram userbot for creating Quotly-style quote stickers.
 - `.q --png` sends the quote as PNG instead of sticker
 - `.q N` quotes N messages starting from the replied message; max 10
 - `.q custom text` creates a quote from custom text
+- `.q` on a selected Telegram quote uses only that selected excerpt
 - `.phelp` shows help
 - `.pping` checks latency
+- `.spam text N` sends `text` N times; max 1000
+- `.spam N` while replying to a sticker, GIF or media resends it N times
+- `.unspam` stops the active spam in the current chat
+- `.cleanurl URL` removes common tracking parameters from a URL
 
 ## Telegram API Setup
 

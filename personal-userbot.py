@@ -5,6 +5,7 @@ import re
 import textwrap
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from telethon import TelegramClient, events
@@ -16,9 +17,41 @@ api_hash = os.environ.get("TG_API_HASH", "your_api_hash")
 SESSION_NAME = "personal_userbot"
 COMMAND_PREFIX = "."
 QUOTE_DIR = Path("downloads/quotes")
+MAX_SPAM_COUNT = 1000
+SPAM_DELAY_SECONDS = 0.05
+URL_RE = re.compile(r"https?://[^\s<>()\[\]{}\"']+")
+TRACKING_PARAMS = {
+    "fbclid",
+    "gclid",
+    "dclid",
+    "gbraid",
+    "wbraid",
+    "msclkid",
+    "yclid",
+    "igshid",
+    "mc_cid",
+    "mc_eid",
+    "mibextid",
+    "ref",
+    "ref_src",
+    "spm",
+    "si",
+    "feature",
+    "app",
+    "share_id",
+    "share_item_id",
+    "timestamp",
+    "is_from_webapp",
+    "sender_device",
+    "web_id",
+    "tt_from",
+    "_r",
+    "_t",
+}
 
 client = TelegramClient(SESSION_NAME, api_id, api_hash)
 AVATAR_CACHE = {}
+ACTIVE_SPAMS = {}
 
 
 HELP_TEXT = """personal-userbot commands
@@ -30,10 +63,15 @@ Quotes
   .q --png              send quote as PNG instead of sticker
   .q N                  quote N messages, max 10
   .q custom text        make a quote from custom text
+  .q on selected quote  quote only the selected Telegram quote text
 
 Bot
   .phelp                show this help
   .pping                latency check
+  .spam text N          send text N times, max 1000
+  .spam N               reply to media and resend it N times
+  .unspam               stop spam in this chat
+  .cleanurl URL         remove tracking params from URL
 """
 
 
@@ -72,6 +110,84 @@ def parse_quote_options(raw):
             text_parts.append(arg)
 
     return send_png, count, " ".join(text_parts).strip()
+
+
+def parse_spam_options(raw):
+    raw = raw.strip()
+
+    if not raw:
+        return None, None
+
+    if raw.isdigit():
+        return "", max(1, min(MAX_SPAM_COUNT, int(raw)))
+
+    text, _, count_text = raw.rpartition(" ")
+
+    if not text.strip() or not count_text.isdigit():
+        return None, None
+
+    count = max(1, min(MAX_SPAM_COUNT, int(count_text)))
+    return text.strip(), count
+
+
+def topic_reply_to(event):
+    reply_header = getattr(getattr(event, "message", None), "reply_to", None)
+
+    if not reply_header:
+        return None
+
+    return getattr(reply_header, "reply_to_msg_id", None) or getattr(reply_header, "reply_to_top_id", None)
+
+
+def topic_id(event):
+    reply_header = getattr(getattr(event, "message", None), "reply_to", None)
+
+    if not reply_header:
+        return None
+
+    return getattr(reply_header, "reply_to_top_id", None) or getattr(reply_header, "reply_to_msg_id", None)
+
+
+def spam_key(event):
+    return event.chat_id, topic_id(event)
+
+
+def is_tracking_param(name):
+    lower = name.lower()
+    return lower.startswith("utm_") or lower in TRACKING_PARAMS
+
+
+def extract_url(text):
+    match = URL_RE.search(text or "")
+
+    if not match:
+        return ""
+
+    return match.group(0).rstrip(".,;:!?")
+
+
+def clean_tracking_url(url):
+    parts = urlsplit(url)
+    query = [
+        (key, value)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        if not is_tracking_param(key)
+    ]
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query, doseq=True), parts.fragment))
+
+
+async def clean_url_message(event, raw):
+    url = extract_url(raw)
+
+    if not url:
+        reply = await event.get_reply_message()
+        url = extract_url(getattr(reply, "raw_text", "") if reply else "")
+
+    if not url:
+        await event.reply(tg_code("Use: .cleanurl URL, or reply to a message with URL"))
+        return
+
+    await event.reply(clean_tracking_url(url))
 
 
 def load_quote_font(size, bold=False):
@@ -476,13 +592,23 @@ async def forwarded_sender(reply):
     return None, None
 
 
-async def build_quote_item(message):
-    text = message.raw_text or ""
+def selected_reply_quote_text(event):
+    reply_header = getattr(getattr(event, "message", None), "reply_to", None)
+
+    if not reply_header:
+        return ""
+
+    quote_text = getattr(reply_header, "quote_text", None) or ""
+    return quote_text.strip()
+
+
+async def build_quote_item(message, text_override=None, include_media=True):
+    text = text_override if text_override is not None else (message.raw_text or "")
     sender = await message.get_sender()
     forwarded_entity, forwarded_name = await forwarded_sender(message)
     author = forwarded_name or display_name(sender)
     avatar_sender = forwarded_entity or sender
-    media_image = await get_quote_media(message)
+    media_image = await get_quote_media(message) if include_media else None
 
     if not text.strip() and media_image is None:
         text = "[unsupported media]"
@@ -526,9 +652,15 @@ async def quote_message(event, raw_options=""):
         avatar = await get_sender_avatar(sender, author)
         png_path = create_quote_image(author, custom_text, avatar)
     elif reply:
-        messages = await collect_quote_messages(event, reply, count)
-        items = await asyncio.gather(*(build_quote_item(message) for message in messages))
-        png_path = create_quote_stack(items)
+        selected_text = selected_reply_quote_text(event)
+
+        if selected_text and count == 1:
+            item = await build_quote_item(reply, text_override=selected_text, include_media=False)
+            png_path = create_quote_stack([item])
+        else:
+            messages = await collect_quote_messages(event, reply, count)
+            items = await asyncio.gather(*(build_quote_item(message) for message in messages))
+            png_path = create_quote_stack(items)
     else:
         await event.reply(tg_code("Reply to a message with .q, or use: .q custom text"))
         return
@@ -559,6 +691,67 @@ async def handler(event):
         msg = await event.reply(tg_code("pong"))
         latency = int((datetime.now() - started).total_seconds() * 1000)
         await msg.edit(tg_code(f"pong {latency}ms"))
+    elif name == "spam":
+        text, count = parse_spam_options(rest)
+
+        if text is None:
+            await event.reply(tg_code("Use: .spam text N, or reply to media with .spam N"))
+            return
+
+        reply = await event.get_reply_message() if not text else None
+        media = getattr(reply, "media", None) if reply else None
+
+        if not text and media is None:
+            await event.reply(tg_code("Reply to a sticker, GIF or media with .spam N"))
+            return
+
+        chat_id = event.chat_id
+        reply_to = topic_reply_to(event)
+        active_key = spam_key(event)
+        previous_stop = ACTIVE_SPAMS.get(active_key)
+
+        if previous_stop:
+            previous_stop.set()
+
+        stop_event = asyncio.Event()
+        ACTIVE_SPAMS[active_key] = stop_event
+        await event.delete()
+
+        try:
+            for _ in range(count):
+                if stop_event.is_set():
+                    break
+
+                if text:
+                    await client.send_message(chat_id, text, reply_to=reply_to)
+                else:
+                    await client.send_message(chat_id, "", file=media, reply_to=reply_to)
+                await asyncio.sleep(SPAM_DELAY_SECONDS)
+        finally:
+            if ACTIVE_SPAMS.get(active_key) is stop_event:
+                ACTIVE_SPAMS.pop(active_key, None)
+    elif name == "cleanurl":
+        await clean_url_message(event, rest)
+    elif name == "unspam":
+        active_key = spam_key(event)
+        stop_events = []
+
+        stop_event = ACTIVE_SPAMS.get(active_key)
+        if stop_event:
+            stop_events.append(stop_event)
+        else:
+            stop_events.extend(
+                active_stop
+                for (chat_id, _), active_stop in ACTIVE_SPAMS.items()
+                if chat_id == event.chat_id
+            )
+
+        if stop_events:
+            for stop_event in stop_events:
+                stop_event.set()
+            await event.delete()
+        else:
+            await event.reply(tg_code("No spam running in this chat"))
     elif name in {"q", "quote", "quotly"}:
         await quote_message(event, rest)
 
