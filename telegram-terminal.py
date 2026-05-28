@@ -17,7 +17,14 @@ from PIL import Image, ImageDraw, ImageFont
 from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError
 
-client = None
+api_id = int(os.environ.get("TG_API_ID", "123456"))
+api_hash = os.environ.get("TG_API_HASH", "your_api_hash")
+
+client = TelegramClient(
+    "telegram_shell",
+    api_id,
+    api_hash
+)
 
 VERSION = "1.3.0"
 BASE_DIR = Path(__file__).resolve().parent
@@ -270,9 +277,6 @@ Bot
   $tt uptime bot             show bot uptime
   $tt uptime system          show system uptime
   $tt about                  show summary"""
-
-
-HELP_TEXT = build_help()
 
 
 def editor_preview(max_chars=3300):
@@ -1759,6 +1763,7 @@ async def stream_shell_output():
             print(f"Stream Error: {e}")
 
 
+@client.on(events.NewMessage)
 async def shell_handler(event):
 
     global current_msg
@@ -1823,7 +1828,7 @@ async def shell_handler(event):
 
     current_time = datetime.now().strftime("%H:%M:%S")
 
-    if command_key in {"help", "tt help"}:
+    if command_key == "tt help":
         await event.reply(tg_code(build_help()))
         return
 
@@ -2428,17 +2433,19 @@ async def shell_handler(event):
         )
 
 
-async def start(topuser_client):
-    global client
-    client = topuser_client
-    asyncio.create_task(stream_shell_output())
-    asyncio.create_task(shell_watchdog())
-    client.add_event_handler(shell_handler, events.NewMessage)
-
-
 async def main():
-    raise RuntimeError("telegram-terminal is embedded in TopUser. Run personal-userbot.py instead.")
 
+    print("telegram-terminal is running.")
 
-if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.create_task(
+        stream_shell_output()
+    )
+    asyncio.create_task(
+        shell_watchdog()
+    )
+
+    await client.start()
+
+    await client.run_until_disconnected()
+
+asyncio.run(main())

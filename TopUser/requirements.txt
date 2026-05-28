@@ -1,4 +1,0 @@
-telethon
-pillow
-pexpect
-pyte
