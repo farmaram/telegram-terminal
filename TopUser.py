@@ -3,6 +3,7 @@ import types
 import os
 import subprocess
 import re
+import sys
 import shutil
 import textwrap
 import urllib.request
@@ -22,6 +23,7 @@ COMMAND_PREFIX = "."
 TERMINAL_PREFIX = "$"
 QUOTE_DIR = Path("downloads/quotes")
 MEDIA_DIR = Path("downloads/media")
+DOWNLOAD_DIR = Path("downloads/links")
 MAX_SPAM_COUNT = 1000
 SPAM_DELAY_SECONDS = 0.05
 URL_RE = re.compile(r"https?://[^\s<>()\[\]{}\"']+")
@@ -80,7 +82,6 @@ Bot
 
 Quotes
   .q                    quote the replied message as sticker
-  .quote / .quotly      same as .q
   .q --png              send quote as PNG instead of sticker
   .q --keep             keep generated quote files on disk
   .q N                  quote N messages, max 10
@@ -94,6 +95,8 @@ Spam
 
 Links
   .cleanurl URL         remove tracking params from URL
+  .download URL         download video from YouTube/TikTok/Instagram
+  .download --keep URL  keep downloaded file on disk after sending
 
 Media
   .144p                 reply to media and send a low quality version
@@ -646,6 +649,89 @@ def save_image_as_sticker(image, output_path):
     canvas.save(output_path, "WEBP", lossless=False, quality=1, method=6)
 
 
+def parse_download_options(raw):
+    args = (raw or "").split()
+    keep_files = "--keep" in args
+    url = next((arg for arg in args if arg != "--keep" and extract_url(arg)), "")
+    return keep_files, url
+
+
+def run_ytdlp_download(url, output_dir):
+    output_dir.mkdir(parents=True, exist_ok=True)
+    template = output_dir / "%(title).90s-%(id)s.%(ext)s"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "yt_dlp",
+            "--no-playlist",
+            "--restrict-filenames",
+            "-f",
+            "bv*+ba/best",
+            "--merge-output-format",
+            "mp4",
+            "-o",
+            str(template),
+            url,
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    files = [path for path in output_dir.iterdir() if path.is_file()]
+
+    if not files:
+        raise RuntimeError(result.stderr.strip() or "yt-dlp did not create a file")
+
+    return max(files, key=lambda item: item.stat().st_mtime)
+
+
+async def download_link(event, raw_options=""):
+    keep_files, url = parse_download_options(raw_options)
+
+    if not url:
+        reply = await event.get_reply_message()
+        url = extract_url(getattr(reply, "raw_text", "") if reply else "")
+
+    if not url:
+        await event.reply(tg_code("Use: .download URL, or reply to a message with URL"))
+        return
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    output_dir = DOWNLOAD_DIR / stamp
+    status = await event.reply(tg_code("downloading..."))
+    downloaded_path = None
+
+    try:
+        downloaded_path = await asyncio.to_thread(run_ytdlp_download, url, output_dir)
+        await client.send_file(
+            event.chat_id,
+            str(downloaded_path),
+            caption=downloaded_path.name,
+            force_document=False,
+            reply_to=topic_reply_to(event),
+        )
+        await status.delete()
+        log(f".download sent in chat {event.chat_id}: {downloaded_path.name}")
+    except FileNotFoundError:
+        await status.edit(tg_code("Python executable was not found"))
+    except subprocess.CalledProcessError as e:
+        error = (e.stderr or e.stdout or "unknown yt-dlp error").strip().splitlines()[-1:]
+        await status.edit(tg_code(f"Download failed: {error[0] if error else 'unknown yt-dlp error'}"))
+    except Exception as e:
+        await status.edit(tg_code(f"Download failed: {e}"))
+    finally:
+        if not keep_files:
+            if downloaded_path:
+                cleanup_files(downloaded_path)
+            try:
+                output_dir.rmdir()
+            except OSError:
+                pass
+
+
 async def send_media_144p(event, raw_options=""):
     reply = await event.get_reply_message()
 
@@ -1113,6 +1199,8 @@ async def handler(event):
                 ACTIVE_SPAMS.pop(active_key, None)
     elif name == "cleanurl":
         await clean_url_message(event, rest)
+    elif name == "download":
+        await download_link(event, rest)
     elif name == "144p":
         await send_media_144p(event, rest)
     elif name == "unspam":
@@ -1135,7 +1223,7 @@ async def handler(event):
             await event.delete()
         else:
             await event.reply(tg_code("No spam running in this chat"))
-    elif name in {"q", "quote", "quotly"}:
+    elif name == "q":
         await quote_message(event, rest)
 
 

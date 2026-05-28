@@ -21,7 +21,7 @@ System tools:
 sudo apt install ffmpeg
 ```
 
-`bash` is required for Telegram Terminal. `ffmpeg` is required for video/media commands such as `.144p` and video quote previews.
+`bash` is required for Telegram Terminal. `ffmpeg` is required for video/media commands such as `.144p` and video quote previews. `yt-dlp` is installed by `requirements.txt` for `.download`.
 
 ## Run
 
@@ -79,7 +79,6 @@ Quotes
 
 ```text
 .q                    quote the replied message as sticker
-.quote / .quotly      same as .q
 .q --png              send quote as PNG instead of sticker
 .q --keep             keep generated quote files on disk
 .q N                  quote N messages, max 10
@@ -99,6 +98,8 @@ Links
 
 ```text
 .cleanurl URL         remove tracking params from URL
+.download URL         download video from YouTube/TikTok/Instagram
+.download --keep URL  keep downloaded file on disk after sending
 ```
 
 Media
@@ -108,7 +109,7 @@ Media
 .144p --keep          keep generated media files on disk
 ```
 
-Generated files are deleted after they are sent to Telegram. Use `--keep` when you want to keep the local output files.
+Generated `.q`, `.144p`, and `.download` files are deleted after they are sent to Telegram. Use `--keep` when you want to keep the local output files.
 
 ## Telegram Terminal
 
@@ -220,4 +221,4 @@ README.md             documentation
 
 This is a userbot and runs on your Telegram account. Keep session files private. The repository ignores virtualenvs, Telegram sessions, caches, downloads, and logs.
 
-Future command planned: `.download` for YouTube, TikTok, Instagram, and other links using `yt-dlp`.
+`.download` uses `yt-dlp`, so it supports YouTube, TikTok, Instagram, and other supported sites.
