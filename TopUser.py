@@ -13,6 +13,7 @@ from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from telethon import TelegramClient, events
+from telethon.tl import functions
 from telethon.tl.types import DocumentAttributeSticker, DocumentAttributeVideo, InputStickerSetEmpty
 
 api_id = int(os.environ.get("TG_API_ID", "123456"))
@@ -26,6 +27,7 @@ MEDIA_DIR = Path("downloads/media")
 DOWNLOAD_DIR = Path("downloads/links")
 MAX_SPAM_COUNT = 1000
 SPAM_DELAY_SECONDS = 0.05
+ONLINE_REFRESH_SECONDS = int(os.environ.get("TOPUSER_ONLINE_REFRESH_SECONDS", "60"))
 URL_RE = re.compile(r"https?://[^\s<>()\[\]{}\"']+")
 TRACKING_PARAMS = {
     "fbclid",
@@ -328,6 +330,21 @@ def print_startup_console():
     print("Personal Userbot: prefix . | help .help")
     print("Telegram Terminal: prefix $ | help $help")
     print("Logs:", flush=True)
+
+
+async def keep_account_online():
+    while True:
+        try:
+            await client(functions.account.UpdateStatusRequest(offline=False))
+        except Exception as e:
+            log(f"online presence refresh failed: {e}")
+
+        await asyncio.sleep(ONLINE_REFRESH_SECONDS)
+
+
+def ask_keep_online():
+    answer = input("Keep account online while TopUser is running? [yes/no]: ").strip().lower()
+    return answer in {"yes", "y"}
 
 
 def load_quote_font(size, bold=False):
@@ -1228,9 +1245,16 @@ async def handler(event):
 
 
 async def main():
+    keep_online = ask_keep_online()
     print_startup_console()
     await client.start()
     log("Telegram client started")
+
+    if keep_online:
+        asyncio.create_task(keep_account_online())
+        log(f"online presence refresh enabled every {ONLINE_REFRESH_SECONDS}s")
+    else:
+        log("online presence refresh disabled")
 
     if TELEGRAM_TERMINAL and hasattr(TELEGRAM_TERMINAL, "start"):
         await TELEGRAM_TERMINAL.start(client)

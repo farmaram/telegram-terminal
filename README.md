@@ -43,6 +43,16 @@ Get `TG_API_ID` and `TG_API_HASH` from https://my.telegram.org/apps.
 
 ## Startup
 
+When TopUser starts, it asks whether it should keep your account online while the Python process is running:
+
+```text
+Keep account online while TopUser is running? [yes/no]:
+```
+
+Answer `yes` to enable it, or `no` to leave presence normal. When enabled, TopUser refreshes online status every 60 seconds by default. Change the interval with `TOPUSER_ONLINE_REFRESH_SECONDS`.
+
+For real 24/7 uptime, keep the Python process running on a VPS, tmux, screen, systemd, or another process manager.
+
 Saved Messages receives:
 
 ```text
