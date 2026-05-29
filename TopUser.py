@@ -40,6 +40,8 @@ DOWNLOAD_DIR = Path("downloads/links")
 MAX_SPAM_COUNT = 1000
 SPAM_DELAY_SECONDS = 0.05
 ONLINE_REFRESH_SECONDS = max(10, int(os.environ.get("TOPUSER_ONLINE_REFRESH_SECONDS", "10")))
+CREDIT_TEXT = "TopUser by trwste"
+CREDIT_HTML = '<i>TopUser by <a href="https://t.me/trwste">trwste</a></i>'
 URL_RE = re.compile(r"https?://[^\s<>()\[\]{}\"']+")
 TRACKING_PARAMS = {
     "fbclid",
@@ -177,7 +179,7 @@ Spam
 
 Links
   .cleanurl URL         remove tracking params from URL
-  .vegadata            show @vegadata YouTube subscribers
+  say Vega/VegaData    show @vegadata YouTube subscribers
   .download URL         download video with Nayan API
   .mp3 URL              get audio using API when available
   add mp3 after any API shortcut to request audio
@@ -449,15 +451,13 @@ async def keep_account_online():
     while True:
         try:
             await client(functions.account.UpdateStatusRequest(offline=False))
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             log(f"online presence refresh failed: {e}")
 
         await asyncio.sleep(ONLINE_REFRESH_SECONDS)
 
-
-def ask_keep_online():
-    answer = input("Keep account online while TopUser is running? [yes/no]: ").strip().lower()
-    return answer in {"yes", "y"}
 
 
 def quote_font_candidates(bold=False):
@@ -744,14 +744,19 @@ def render_vegadata_card(stats):
     return path
 
 
+def is_vegadata_trigger(text):
+    text = text or ""
+    return re.search(r"\bvega(?:\s*(?:data|dados))?\b", text, flags=re.IGNORECASE) is not None
+
+
 async def send_vegadata(event):
-    status = await event.reply(tg_code("fetching @vegadata subscribers..."))
+    status = await event.reply(tg_code("fetching subscribers..."))
     path = None
 
     try:
         stats = await asyncio.to_thread(fetch_vegadata_stats)
         path = await asyncio.to_thread(render_vegadata_card, stats)
-        caption = f"VegaData\nSubscribers: {compact_stat(stats.get('subscribers'))}\n{VEGADATA_CHANNEL_URL}"
+        caption = f"VegaData\nSubscribers: {compact_stat(stats.get('subscribers'))}\n\nEu preciso da festinha\n{VEGADATA_CHANNEL_URL}"
         await client.send_file(
             event.chat_id,
             str(path),
@@ -1295,27 +1300,198 @@ def nayan_best_audio_url(data):
     return urls[0][1]
 
 
-def nayan_title(data):
+def nayan_extract_title(data):
     if isinstance(data, dict):
         for key in ("title", "name", "caption"):
             value = data.get(key)
 
-            if isinstance(value, str) and value.strip():
+            if isinstance(value, str) and value.strip() and not value.strip().startswith(("http://", "https://")):
                 return value.strip()[:120]
 
         for value in data.values():
-            title = nayan_title(value)
+            title = nayan_extract_title(value)
 
             if title:
                 return title
     elif isinstance(data, list):
         for value in data:
-            title = nayan_title(value)
+            title = nayan_extract_title(value)
 
             if title:
                 return title
 
-    return "video"
+    return ""
+
+
+def nayan_title(data):
+    return nayan_extract_title(data) or "video"
+
+
+def nayan_find_value(data, keys):
+    keys = {key.lower() for key in keys}
+
+    if isinstance(data, dict):
+        for key, value in data.items():
+            key_text = str(key).lower().replace("-", "_")
+
+            if key_text in keys and value not in (None, ""):
+                return value
+
+        for value in data.values():
+            found = nayan_find_value(value, keys)
+
+            if found not in (None, ""):
+                return found
+    elif isinstance(data, list):
+        for value in data:
+            found = nayan_find_value(value, keys)
+
+            if found not in (None, ""):
+                return found
+
+    return None
+
+
+def nayan_clean_text(value, max_len=80):
+    if value is None:
+        return ""
+
+    if isinstance(value, (int, float)):
+        value = str(value)
+    elif not isinstance(value, str):
+        return ""
+
+    value = " ".join(value.strip().split())
+
+    if not value or value.startswith(("http://", "https://")):
+        return ""
+
+    return value[:max_len]
+
+
+def nayan_format_count(value):
+    if value is None:
+        return ""
+
+    if isinstance(value, str):
+        raw = value.strip().replace(",", "")
+
+        if not raw:
+            return ""
+
+        if not re.fullmatch(r"\d+(\.\d+)?", raw):
+            return nayan_clean_text(value, 40)
+
+        value = float(raw)
+
+    if not isinstance(value, (int, float)):
+        return ""
+
+    value = int(value)
+
+    if value >= 1_000_000_000:
+        return f"{value / 1_000_000_000:.1f}B"
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M"
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}K"
+
+    return str(value)
+
+
+def nayan_format_duration(value):
+    if value is None:
+        return ""
+
+    if isinstance(value, str):
+        text = value.strip()
+
+        if not text:
+            return ""
+
+        if ":" in text or any(unit in text.lower() for unit in ("sec", "min", "hour", "hora")):
+            return nayan_clean_text(text, 40)
+
+        try:
+            value = float(text)
+        except ValueError:
+            return nayan_clean_text(text, 40)
+
+    if not isinstance(value, (int, float)):
+        return ""
+
+    seconds = int(value)
+
+    if seconds <= 0:
+        return ""
+
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+
+    return f"{minutes}:{seconds:02d}"
+
+
+def nayan_platform_name(source_url):
+    host = clean_host(urlsplit(source_url).netloc)
+
+    if not host:
+        return "Unknown"
+
+    parts = host.split(".")
+
+    if len(parts) >= 2:
+        host = parts[-2]
+
+    names = {
+        "youtu": "YouTube",
+        "youtube": "YouTube",
+        "tiktok": "TikTok",
+        "instagram": "Instagram",
+        "facebook": "Facebook",
+        "twitter": "Twitter",
+        "x": "X",
+        "pinterest": "Pinterest",
+        "soundcloud": "SoundCloud",
+        "capcut": "CapCut",
+        "terabox": "Terabox",
+    }
+
+    return names.get(host, host.title())
+
+
+def build_nayan_caption(data, source_url, audio_mode=False):
+    title = nayan_title(data)
+
+    if not title or title == "video":
+        title = "Audio ready" if audio_mode else "Video ready"
+
+    fields = [
+        ("Type", "Audio" if audio_mode else "Video"),
+        ("Source", nayan_platform_name(source_url)),
+        ("Author", nayan_clean_text(nayan_find_value(data, {"author", "owner", "uploader", "creator", "channel", "artist", "username"}))),
+        ("Duration", nayan_format_duration(nayan_find_value(data, {"duration", "duration_string", "length", "time"}))),
+        ("Quality", nayan_clean_text(nayan_find_value(data, {"quality", "resolution", "format", "type"}), 40)),
+        ("Views", nayan_format_count(nayan_find_value(data, {"views", "view", "view_count", "play_count", "plays"}))),
+        ("Likes", nayan_format_count(nayan_find_value(data, {"likes", "like", "like_count", "digg_count"}))),
+    ]
+
+    lines = [f"<i>{html.escape(title)}</i>", ""]
+
+    for label, value in fields:
+        if value:
+            lines.append(f"<b>{label}:</b> {html.escape(str(value))}")
+
+    lines.append("")
+    lines.append(CREDIT_HTML)
+    caption = "\n".join(lines).strip()
+
+    if len(caption) > 1024:
+        caption = caption[:1000].rstrip() + "..."
+
+    return caption
 
 
 def download_remote_media(url, output_dir, filename="video.mp4"):
@@ -1369,13 +1545,14 @@ async def nayan_download_link(event, raw_options="", command_name="video"):
                 await status.edit(tg_code("API did not return a downloadable video URL for this link."))
             return
 
-        caption = nayan_title(data)
+        caption = build_nayan_caption(data, url, audio_mode)
 
         try:
             await client.send_file(
                 event.chat_id,
                 media_url,
                 caption=caption,
+                parse_mode="html",
                 force_document=False,
                 reply_to=topic_reply_to(event),
             )
@@ -1386,6 +1563,7 @@ async def nayan_download_link(event, raw_options="", command_name="video"):
                 event.chat_id,
                 str(downloaded_path),
                 caption=caption,
+                parse_mode="html",
                 force_document=False,
                 reply_to=topic_reply_to(event),
             )
@@ -1427,13 +1605,14 @@ async def download_mp3(event, raw_options=""):
             await status.edit(tg_code("API did not return an audio URL for this link."))
             return
 
-        caption = nayan_title(data)
+        caption = build_nayan_caption(data, url, audio_mode=True)
 
         try:
             await client.send_file(
                 event.chat_id,
                 audio_url,
                 caption=caption,
+                parse_mode="html",
                 force_document=False,
                 reply_to=topic_reply_to(event),
             )
@@ -1443,6 +1622,7 @@ async def download_mp3(event, raw_options=""):
                 event.chat_id,
                 str(downloaded_path),
                 caption=caption,
+                parse_mode="html",
                 force_document=False,
                 reply_to=topic_reply_to(event),
             )
@@ -2580,10 +2760,16 @@ async def handle_telegram_terminal(event):
 
 @client.on(events.NewMessage(outgoing=True))
 async def handler(event):
-    if (event.raw_text or "").startswith(TERMINAL_PREFIX):
+    raw_text = event.raw_text or ""
+
+    if raw_text.startswith(TERMINAL_PREFIX):
         return
 
-    name, rest = parse_command(event.raw_text)
+    if raw_text and not getattr(event.message, "media", None) and is_vegadata_trigger(raw_text):
+        await send_vegadata(event)
+        return
+
+    name, rest = parse_command(raw_text)
 
     if not name:
         return
@@ -2636,12 +2822,6 @@ async def handler(event):
                 ACTIVE_SPAMS.pop(active_key, None)
     elif name == "cleanurl":
         await clean_url_message(event, rest)
-    elif name == "vegadata":
-        if rest.strip():
-            await event.reply(tg_code("Use only: .vegadata"))
-            return
-
-        await send_vegadata(event)
     elif name == "download":
         await download_link(event, rest)
     elif name == "mp3":
@@ -2685,9 +2865,14 @@ async def handler(event):
 CLI_HELP = """TopUser local CLI
   .help                         show this help
   .me                           show logged account
-  .dialogs [N]                  list recent chats, default 20
   .say <text> <chat>            send text to chat/user/group
   .say <chat> <text>            same, when chat is the first argument
+  .delete <chat> <msg_id...>    delete one or more messages from a chat
+  .delete <msg_id...> <chat>    same, when chat is the last argument
+  .file <chat> <path> [caption] send a local file to chat/user/group
+  .clear                        clear this terminal screen
+  .clear logs                   delete files from logs/
+  .alwaysonline [on|off|status] keep Telegram account shown online
   .shell <command>              run local shell command
   !<command>                    shortcut for .shell
   exit | quit                   disconnect and close
@@ -2697,7 +2882,12 @@ Examples:
   .say oi 123456789
   .say -1001234567890 salve grupo
   .say @username oi
+  .delete @username 12345
+  .delete 12345 12346 -1001234567890
+  .file @username ./photo.jpg legenda
 """
+
+ALWAYS_ONLINE_TASK = None
 
 
 def normalize_cli_chat(value):
@@ -2744,6 +2934,137 @@ def parse_cli_say_args(raw):
     return chat, text
 
 
+def parse_cli_file_args(raw):
+    try:
+        parts = shlex.split(raw)
+    except ValueError:
+        parts = raw.split()
+
+    if len(parts) < 2:
+        raise ValueError("Use: .file <chat> <path> [caption]")
+
+    if looks_like_chat_token(parts[0]):
+        chat = normalize_cli_chat(parts[0])
+        file_path = Path(parts[1]).expanduser()
+        caption = " ".join(parts[2:]).strip() or None
+    elif looks_like_chat_token(parts[1]):
+        file_path = Path(parts[0]).expanduser()
+        chat = normalize_cli_chat(parts[1])
+        caption = " ".join(parts[2:]).strip() or None
+    else:
+        raise ValueError("Missing chat id/@username. Use: .file <chat> <path> [caption]")
+
+    if not file_path.exists() or not file_path.is_file():
+        raise ValueError(f"File not found: {file_path}")
+
+    return chat, file_path, caption
+
+
+async def send_cli_file(raw):
+    chat, file_path, caption = parse_cli_file_args(raw)
+    sent = await client.send_file(chat, str(file_path), caption=caption)
+    message_id = getattr(sent, "id", "?")
+    print(f"sent file message {message_id} to {chat}: {file_path}")
+
+
+
+def parse_cli_delete_args(raw):
+    try:
+        parts = shlex.split(raw)
+    except ValueError:
+        parts = raw.split()
+
+    if len(parts) < 2:
+        raise ValueError("Use: .delete <chat> <msg_id...> or .delete <msg_id...> <chat>")
+
+    if looks_like_chat_token(parts[0]):
+        chat = normalize_cli_chat(parts[0])
+        message_parts = parts[1:]
+    elif looks_like_chat_token(parts[-1]):
+        chat = normalize_cli_chat(parts[-1])
+        message_parts = parts[:-1]
+    else:
+        raise ValueError("Missing chat id/@username. Use: .delete <chat> <msg_id...>")
+
+    message_ids = []
+    for part in message_parts:
+        for item in part.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            if not item.isdigit():
+                raise ValueError(f"Invalid message id: {item}")
+            message_ids.append(int(item))
+
+    if not message_ids:
+        raise ValueError("Missing message id.")
+
+    return chat, message_ids
+
+
+async def delete_cli_messages(raw):
+    chat, message_ids = parse_cli_delete_args(raw)
+    deleted = await client.delete_messages(chat, message_ids, revoke=True)
+    count = len(deleted) if isinstance(deleted, list) else len(message_ids)
+    print(f"deleted {count} message(s) from {chat}")
+
+
+def clear_cli_screen():
+    os.system("cls" if os.name == "nt" else "clear")
+
+
+def clear_log_files():
+    logs_dir = Path("logs")
+
+    if not logs_dir.exists():
+        return "logs/ does not exist."
+
+    deleted = 0
+    for item in logs_dir.iterdir():
+        if item.is_dir():
+            shutil.rmtree(item)
+        else:
+            item.unlink()
+        deleted += 1
+
+    return f"deleted {deleted} item(s) from logs/."
+
+
+async def set_always_online(raw=""):
+    global ALWAYS_ONLINE_TASK
+
+    option = raw.strip().lower() or "status"
+
+    if option in {"on", "yes", "y", "true", "1", "start"}:
+        if ALWAYS_ONLINE_TASK and not ALWAYS_ONLINE_TASK.done():
+            print(f"alwaysonline already on, refresh every {ONLINE_REFRESH_SECONDS}s")
+            return
+
+        ALWAYS_ONLINE_TASK = asyncio.create_task(keep_account_online())
+        print(f"alwaysonline on, refresh every {ONLINE_REFRESH_SECONDS}s")
+        return
+
+    if option in {"off", "no", "n", "false", "0", "stop"}:
+        if ALWAYS_ONLINE_TASK and not ALWAYS_ONLINE_TASK.done():
+            ALWAYS_ONLINE_TASK.cancel()
+            try:
+                await ALWAYS_ONLINE_TASK
+            except asyncio.CancelledError:
+                pass
+
+        ALWAYS_ONLINE_TASK = None
+        print("alwaysonline off")
+        return
+
+    if option in {"status", ""}:
+        enabled = ALWAYS_ONLINE_TASK is not None and not ALWAYS_ONLINE_TASK.done()
+        status = "on" if enabled else "off"
+        print(f"alwaysonline {status}")
+        return
+
+    print("Use: .alwaysonline on | off | status")
+
+
 async def run_local_shell(command):
     if not command.strip():
         return "Use: .shell <command>"
@@ -2768,24 +3089,6 @@ async def run_local_shell(command):
         text = text[-4000:]
 
     return text
-
-
-async def print_dialogs(limit_text=""):
-    try:
-        limit = int(limit_text.strip()) if limit_text.strip() else 20
-    except ValueError:
-        limit = 20
-
-    limit = max(1, min(100, limit))
-    rows = []
-
-    async for dialog in client.iter_dialogs(limit=limit):
-        entity = dialog.entity
-        username = getattr(entity, "username", None)
-        username_text = f" @{username}" if username else ""
-        rows.append(f"{dialog.id} | {dialog.name}{username_text}")
-
-    print("\n".join(rows) if rows else "No dialogs found.")
 
 
 async def handle_cli_line(line):
@@ -2816,12 +3119,23 @@ async def handle_cli_line(line):
             me = await client.get_me()
             username = f" @{me.username}" if getattr(me, "username", None) else ""
             print(f"Logged as: {me.id} | {getattr(me, 'first_name', '') or ''}{username}")
-        elif name == "dialogs":
-            await print_dialogs(rest)
         elif name == "say":
             chat, message = parse_cli_say_args(rest)
             sent = await client.send_message(chat, message)
             print(f"sent message {sent.id} to {chat}")
+        elif name in {"delete", "del", "rm"}:
+            await delete_cli_messages(rest)
+        elif name in {"file", "sendfile"}:
+            await send_cli_file(rest)
+        elif name == "clear":
+            if rest.strip().lower() in {"logs", "log"}:
+                print(clear_log_files())
+            else:
+                clear_cli_screen()
+        elif name == "logs" and rest.strip().lower() in {"clear", "clean", "delete"}:
+            print(clear_log_files())
+        elif name in {"alwaysonline", "alwasyonline", "alqaysonline", "online"}:
+            await set_always_online(rest)
         elif name == "shell":
             print(await run_local_shell(rest))
         else:
@@ -2831,7 +3145,7 @@ async def handle_cli_line(line):
 
 
 async def local_cli_loop():
-    print("Local CLI ready. Use .help, .dialogs, .say, .shell, or exit.")
+    print("Local CLI ready. Use .help, .say, .delete, .file, .shell, or exit.")
 
     while client.is_connected():
         try:
@@ -2843,17 +3157,12 @@ async def local_cli_loop():
         await handle_cli_line(line)
 
 
+
 async def main():
-    keep_online = ask_keep_online()
     print_startup_console()
     await client.start()
     log("Telegram client started")
-
-    if keep_online:
-        asyncio.create_task(keep_account_online())
-        log(f"online presence refresh enabled every {ONLINE_REFRESH_SECONDS}s")
-    else:
-        log("online presence refresh disabled")
+    log("online presence refresh disabled; use .alwaysonline on in the local CLI")
 
     if TELEGRAM_TERMINAL and hasattr(TELEGRAM_TERMINAL, "start"):
         await TELEGRAM_TERMINAL.start(client)
