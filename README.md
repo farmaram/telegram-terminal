@@ -1,5 +1,16 @@
 # TopUser
 
+```text
+ _______          __  __
+|__   __|        | | | |
+   | | ___  _ __ | | | |___  ___ _ __
+   | |/ _ \| '_ \| | | / __|/ _ \ '__|
+   | | (_) | |_) | |_| \__ \  __/ |
+   |_|\___/| .__/ \___/|___/\___|_|
+            | |
+            |_|
+```
+
 TopUser is a Telegram userbot with two command sets running in the same session.
 
 - Personal Userbot uses the `.` prefix and is shown with `.help`.
@@ -108,13 +119,11 @@ Links
 ```text
 .cleanurl URL         remove tracking params from URL
 .download URL         download video with Nayan API
-.download --keep URL  keep fallback downloaded file on disk after sending
 .mp3 URL              get audio using API when available
-.yt mp3 URL           get audio using API when available
-.tiktok mp3 URL       get audio using API when available
+add mp3 after any API shortcut to request audio
 .api URL              download with Nayan API for supported sites
 .yt/.ig/.fb/.x URL    API shortcuts for social links
-.pin/.threads/.capcut URL and more API shortcuts
+.pin/.capcut/.soundcloud URL and more API shortcuts
 ```
 
 Media
@@ -123,7 +132,7 @@ Media
 .144p                 reply to media and send a low quality version
 ```
 
-Generated `.q` and `.144p` files are always deleted after they are sent to Telegram. `.download` and API shortcut fallback files are also deleted after sending unless `--keep` is used.
+Generated `.q`, `.144p`, `.download`, and API shortcut fallback files are deleted after they are sent to Telegram.
 
 ## Telegram Terminal
 
@@ -235,4 +244,4 @@ README.md             documentation
 
 This is a userbot and runs on your Telegram account. Keep session files private. The repository ignores virtualenvs, Telegram sessions, caches, downloads, and logs.
 
-`.download`, `.mp3`, `.api`, and shortcuts such as `.yt`, `.tiktok`, `.ig`, `.fb`, `.x`, `.pin`, `.threads`, and `.capcut` use the Nayan Video Downloader API: https://nayan-video-downloader.vercel.app. Platform shortcuts use the matching API endpoints when available, including `/instagram` for Instagram links. Audio mode is API-only: use `.mp3 URL` or `.yt mp3 URL`; the API may return MP3, M4A, AAC, OGG, WAV, or OPUS depending on the source. Credit for downloader responses goes to the Nayan API service.
+`.download`, `.mp3`, `.api`, and shortcuts such as `.yt`, `.tiktok`, `.ig`, `.fb`, `.x`, `.pin`, `.capcut`, `.soundcloud`, `.spotify`, `.terabox`, `.gdrive`, and `.ndown` use the Nayan Video Downloader API. Platform shortcuts use the matching API endpoints when available, including `/instagram` for Instagram links. Audio mode is API-only: use `.mp3 URL` or add `mp3` after any API shortcut; the API may return MP3, M4A, AAC, OGG, WAV, or OPUS depending on the source. Credit for downloader responses goes to the Nayan API service.
