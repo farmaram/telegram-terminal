@@ -1929,6 +1929,14 @@ def export_message_text(message):
     return ""
 
 
+def export_initials(name):
+    parts = [part for part in re.split(r"\s+", str(name or "").strip()) if part]
+
+    if not parts:
+        return "?"
+
+    return "".join(part[0].upper() for part in parts[:2])[:2]
+
 def build_chat_export_html(chat_title, scope_title, messages, users):
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     total_messages = len(messages)
@@ -1938,10 +1946,12 @@ def build_chat_export_html(chat_title, scope_title, messages, users):
     for user_id, user in sorted(users.items(), key=lambda item: (-item[1]["count"], item[1]["name"].lower())):
         username = f"@{user['username']}" if user.get("username") else "No username"
         search_text = f"{user['name']} {username}".lower()
+        initials = html.escape(export_initials(user['name']))
         user_items.append(
             "<button class=\"user-item\" type=\"button\" "
             f"data-user=\"{html.escape(str(user_id), quote=True)}\" "
             f"data-search=\"{html.escape(search_text, quote=True)}\">"
+            f"<i>{initials}</i>"
             "<span>"
             f"<b>{html.escape(user['name'])}</b>"
             f"<small>{html.escape(username)}</small>"
@@ -1966,16 +1976,20 @@ def build_chat_export_html(chat_title, scope_title, messages, users):
         username = html.escape(item.get("username") or "")
         username_html = f"<span>{username}</span>" if username else ""
         search_text = f"{item['author']} {item.get('username') or ''} {item['text']}".lower()
+        initials = html.escape(export_initials(item['author']))
         message_rows.append(
             "<article class=\"message\" "
             f"data-user=\"{html.escape(str(item.get('user_id') or ''), quote=True)}\" "
             f"data-search=\"{html.escape(search_text, quote=True)}\">"
+            f"<div class=\"avatar\">{initials}</div>"
+            "<div class=\"bubble\">"
             "<div class=\"message-top\">"
             f"<strong>{author}</strong>"
             f"{username_html}"
-            f"<time>{when}</time>"
             "</div>"
             f"<p>{body}</p>"
+            f"<time>{when}</time>"
+            "</div>"
             "</article>"
         )
 
@@ -1990,37 +2004,42 @@ def build_chat_export_html(chat_title, scope_title, messages, users):
 <style>
 :root {{ color-scheme: dark; }}
 * {{ box-sizing: border-box; }}
-body {{ margin: 0; background: rgb(8, 10, 12); color: rgb(232, 235, 239); font-family: Arial, Helvetica, sans-serif; }}
-header {{ background: rgb(0, 0, 0); color: white; padding: 24px 28px; border-bottom: 1px solid rgb(35, 39, 45); position: sticky; top: 0; z-index: 5; }}
-header h1 {{ margin: 0 0 8px; font-size: 26px; font-weight: 700; }}
-header p {{ margin: 0; color: rgb(155, 163, 175); }}
-.layout {{ display: grid; grid-template-columns: 320px minmax(0, 1fr); min-height: calc(100vh - 86px); }}
-aside {{ border-right: 1px solid rgb(35, 39, 45); background: rgb(11, 13, 16); padding: 18px; position: sticky; top: 86px; height: calc(100vh - 86px); overflow: auto; }}
-main {{ min-width: 0; padding: 24px 24px 48px; }}
-.summary {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }}
-.summary div {{ background: rgb(17, 20, 24); border: 1px solid rgb(40, 45, 52); border-radius: 8px; padding: 16px; }}
-.summary b {{ display: block; font-size: 24px; margin-bottom: 4px; }}
-.search {{ width: 100%; border: 1px solid rgb(48, 54, 62); background: rgb(17, 20, 24); color: rgb(232, 235, 239); border-radius: 8px; padding: 11px 12px; outline: none; margin-bottom: 12px; }}
-.search:focus {{ border-color: rgb(91, 188, 255); }}
-.user-list {{ display: grid; gap: 8px; }}
-.user-item {{ width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid rgb(40, 45, 52); background: rgb(17, 20, 24); color: inherit; border-radius: 8px; padding: 10px 11px; cursor: pointer; text-align: left; }}
-.user-item:hover, .user-item.active {{ border-color: rgb(91, 188, 255); background: rgb(20, 27, 34); }}
+body {{ margin: 0; background: rgb(14, 22, 33); color: rgb(232, 235, 239); font-family: Arial, Helvetica, sans-serif; }}
+header {{ background: rgb(23, 33, 43); color: white; padding: 18px 24px; border-bottom: 1px solid rgb(15, 23, 32); position: sticky; top: 0; z-index: 5; }}
+header h1 {{ margin: 0 0 5px; font-size: 22px; font-weight: 700; }}
+header p {{ margin: 0; color: rgb(143, 161, 176); font-size: 13px; }}
+.layout {{ display: grid; grid-template-columns: 330px minmax(0, 1fr); min-height: calc(100vh - 74px); }}
+aside {{ border-right: 1px solid rgb(15, 23, 32); background: rgb(23, 33, 43); padding: 14px; position: sticky; top: 74px; height: calc(100vh - 74px); overflow: auto; }}
+main {{ min-width: 0; padding: 18px 16px 46px; background: radial-gradient(circle at top left, rgba(42, 82, 112, .26), transparent 380px), rgb(14, 22, 33); }}
+.summary {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; max-width: 860px; margin: 0 auto 16px; }}
+.summary div {{ background: rgba(23, 33, 43, .92); border: 1px solid rgba(91, 188, 255, .13); border-radius: 6px; padding: 12px 14px; }}
+.summary b {{ display: block; font-size: 21px; margin-bottom: 2px; }}
+.summary span {{ color: rgb(143, 161, 176); font-size: 13px; }}
+.search {{ width: 100%; border: 1px solid rgb(45, 61, 76); background: rgb(36, 47, 61); color: rgb(232, 235, 239); border-radius: 999px; padding: 11px 14px; outline: none; margin-bottom: 12px; }}
+.search:focus {{ border-color: rgb(82, 176, 232); }}
+.user-list {{ display: grid; gap: 4px; }}
+.user-item {{ width: 100%; display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 10px; border: 0; background: transparent; color: inherit; border-radius: 8px; padding: 8px; cursor: pointer; text-align: left; }}
+.user-item:hover, .user-item.active {{ background: rgb(42, 57, 72); }}
+.user-item i, .avatar {{ width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; background: linear-gradient(135deg, rgb(61, 151, 216), rgb(46, 185, 137)); color: white; font-style: normal; font-size: 13px; font-weight: 700; flex: 0 0 auto; }}
 .user-item span {{ min-width: 0; }}
 .user-item b, .user-item small {{ display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
-.user-item small {{ color: rgb(148, 158, 170); margin-top: 3px; }}
-.user-item em {{ color: rgb(155, 163, 175); font-style: normal; font-size: 13px; }}
+.user-item b {{ font-size: 14px; }}
+.user-item small {{ color: rgb(143, 161, 176); margin-top: 3px; font-size: 12px; }}
+.user-item em {{ color: rgb(143, 161, 176); font-style: normal; font-size: 12px; }}
 .user-item.hidden, .message.hidden, .day.hidden {{ display: none; }}
-.filter-all {{ margin-bottom: 12px; }}
-.results {{ color: rgb(155, 163, 175); margin: 0 0 14px; font-size: 13px; }}
-.day {{ color: rgb(155, 163, 175); font-size: 13px; font-weight: 700; margin: 20px 0 10px; }}
-.message {{ background: rgb(17, 20, 24); border: 1px solid rgb(40, 45, 52); border-radius: 8px; padding: 14px 16px; margin-bottom: 10px; }}
-.message-top {{ display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }}
-.message-top strong {{ color: rgb(91, 188, 255); }}
-.message-top span {{ color: rgb(148, 158, 170); font-size: 13px; }}
-.message-top time {{ margin-left: auto; color: rgb(132, 141, 153); font-size: 12px; }}
-.message p {{ margin: 9px 0 0; line-height: 1.45; white-space: normal; overflow-wrap: anywhere; }}
-.empty {{ padding: 18px; color: rgb(155, 163, 175); }}
-@media (max-width: 850px) {{ header {{ position: static; }} .layout {{ grid-template-columns: 1fr; }} aside {{ position: static; height: auto; border-right: 0; border-bottom: 1px solid rgb(35, 39, 45); }} .summary {{ grid-template-columns: 1fr; }} .message-top time {{ margin-left: 0; }} }}
+.filter-all {{ margin-bottom: 10px; }}
+.results {{ color: rgb(143, 161, 176); max-width: 860px; margin: 0 auto 14px; font-size: 13px; }}
+#messages {{ max-width: 860px; margin: 0 auto; }}
+.day {{ width: fit-content; color: rgb(207, 217, 226); background: rgba(54, 70, 84, .78); border-radius: 999px; font-size: 12px; font-weight: 700; margin: 18px auto 12px; padding: 6px 12px; }}
+.message {{ display: flex; align-items: flex-end; gap: 8px; margin: 0 0 8px; }}
+.bubble {{ max-width: min(720px, calc(100vw - 430px)); background: rgb(24, 37, 51); border-radius: 12px 12px 12px 3px; padding: 8px 11px 6px; box-shadow: 0 1px 1px rgba(0, 0, 0, .18); }}
+.message-top {{ display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; margin-bottom: 2px; }}
+.message-top strong {{ color: rgb(82, 176, 232); font-size: 13px; }}
+.message-top span {{ color: rgb(143, 161, 176); font-size: 12px; }}
+.message time {{ float: right; color: rgb(121, 145, 164); font-size: 11px; margin: 5px 0 0 12px; }}
+.message p {{ margin: 0; line-height: 1.38; white-space: normal; overflow-wrap: anywhere; font-size: 14px; }}
+.empty {{ max-width: 860px; margin: 0 auto; padding: 18px; color: rgb(143, 161, 176); }}
+@media (max-width: 850px) {{ header {{ position: static; }} .layout {{ grid-template-columns: 1fr; }} aside {{ position: static; height: auto; border-right: 0; border-bottom: 1px solid rgb(15, 23, 32); }} main {{ padding: 14px 10px 34px; }} .summary {{ grid-template-columns: 1fr; }} .bubble {{ max-width: calc(100vw - 72px); }} }}
 </style>
 </head>
 <body>
@@ -2031,7 +2050,7 @@ main {{ min-width: 0; padding: 24px 24px 48px; }}
 <div class=\"layout\">
 <aside>
 <input id=\"search\" class=\"search\" type=\"search\" placeholder=\"Search users or messages\" autocomplete=\"off\">
-<button id=\"allUsers\" class=\"user-item filter-all active\" type=\"button\" data-user=\"\"><span><b>All users</b><small>Full export</small></span><em>{total_messages}</em></button>
+<button id=\"allUsers\" class=\"user-item filter-all active\" type=\"button\" data-user=\"\"><i>All</i><span><b>All users</b><small>Full export</small></span><em>{total_messages}</em></button>
 <div id=\"users\" class=\"user-list\">{users_html}</div>
 </aside>
 <main>
@@ -2136,6 +2155,29 @@ async def send_export_file(event, chat_title, scope_title, messages, users, part
         cleanup_files(final_path)
 
 
+async def send_export_snapshot(event, state, partial=True):
+    lock = state.get("lock")
+
+    if lock is None:
+        lock = asyncio.Lock()
+        state["lock"] = lock
+
+    async with lock:
+        if partial and state.get("partial_sent"):
+            return False
+
+        messages = list(state.get("messages") or [])
+        users = {key: value.copy() for key, value in (state.get("users") or {}).items()}
+        chat_title = state.get("chat_title") or "chat"
+        scope_title = state.get("scope_title") or "full chat"
+        await send_export_file(event, chat_title, scope_title, messages, users, partial=partial)
+
+        if partial:
+            state["partial_sent"] = True
+
+        return True
+
+
 async def export_chat_html(event, raw_target=""):
     target, target_text = export_target_from_text(raw_target, event.chat_id)
     selected_topic = topic_id(event) if not target_text else None
@@ -2151,11 +2193,20 @@ async def export_chat_html(event, raw_target=""):
             previous_stop.set()
 
         stop_event = asyncio.Event()
-        ACTIVE_EXPORTS[active_key] = {"stop_event": stop_event}
         chat_title = display_name(chat, str(target))
         scope_title = f"topic {selected_topic}" if selected_topic else "full chat"
         messages = []
         users = {}
+        export_state = {
+            "stop_event": stop_event,
+            "messages": messages,
+            "users": users,
+            "chat_title": chat_title,
+            "scope_title": scope_title,
+            "lock": asyncio.Lock(),
+            "partial_sent": False,
+        }
+        ACTIVE_EXPORTS[active_key] = export_state
         sender_cache = {}
         cancelled = False
 
@@ -2201,11 +2252,16 @@ async def export_chat_html(event, raw_target=""):
                 await status.edit(tg_code(f"Exporting chat... {len(messages)} messages"))
 
         if cancelled:
+            if export_state.get("partial_sent"):
+                await status.delete()
+                log(f".exportchat cancelled after partial export with {len(messages)} messages from {chat_title}")
+                return
+
             await status.edit(tg_code(f"Export cancelled. Sending partial HTML with {len(messages)} messages..."))
         else:
             await status.edit(tg_code(f"Sending export with {len(messages)} messages..."))
 
-        await send_export_file(event, chat_title, scope_title, messages, users, partial=cancelled)
+        await send_export_snapshot(event, export_state, partial=cancelled)
         await status.delete()
 
         if cancelled:
@@ -2227,36 +2283,58 @@ async def export_chat_html(event, raw_target=""):
 async def cancel_chat_export(event, raw_target=""):
     target, target_text = export_target_from_text(raw_target, event.chat_id)
     selected_topic = topic_id(event) if not target_text else None
-    stop_events = []
+    export_states = []
 
     try:
         chat = await client.get_entity(target)
         active_key = export_key(getattr(chat, "id", target), selected_topic)
         active_export = ACTIVE_EXPORTS.get(active_key)
-        stop_event = active_export.get("stop_event") if isinstance(active_export, dict) else active_export
 
-        if stop_event:
-            stop_events.append(stop_event)
+        if active_export:
+            export_states.append(active_export)
         elif not selected_topic:
             target_id = getattr(chat, "id", target)
-            stop_events.extend(
-                active_export.get("stop_event") if isinstance(active_export, dict) else active_export
+            export_states.extend(
+                active_export
                 for (chat_id, _), active_export in ACTIVE_EXPORTS.items()
                 if chat_id == target_id
             )
     except Exception:
         active_export = ACTIVE_EXPORTS.get(export_key(event.chat_id, selected_topic))
-        stop_event = active_export.get("stop_event") if isinstance(active_export, dict) else active_export
+
+        if active_export:
+            export_states.append(active_export)
+
+    if not export_states:
+        await event.reply(tg_code("No export running in this chat/topic."))
+        return
+
+    ack = await event.reply(tg_code("Export cancel requested. Sending partial HTML..."))
+    sent = 0
+    errors = []
+
+    for state in export_states:
+        if isinstance(state, dict):
+            stop_event = state.get("stop_event")
+        else:
+            stop_event = state
 
         if stop_event:
-            stop_events.append(stop_event)
-
-    if stop_events:
-        for stop_event in stop_events:
             stop_event.set()
-        await event.reply(tg_code("Export cancel requested. Partial HTML will be sent when the current batch stops."))
+
+        if isinstance(state, dict):
+            try:
+                if await send_export_snapshot(event, state, partial=True):
+                    sent += 1
+            except Exception as e:
+                errors.append(str(e))
+
+    if errors:
+        await ack.edit(tg_code("Export cancel requested, but partial send failed:\n" + "\n".join(errors[:3])))
+    elif sent:
+        await ack.edit(tg_code("Export cancelled. Partial HTML sent."))
     else:
-        await event.reply(tg_code("No export running in this chat/topic."))
+        await ack.edit(tg_code("Export cancel requested. Partial HTML was already sent."))
 
 
 async def clear_own_messages(event):
