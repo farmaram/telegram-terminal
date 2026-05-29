@@ -784,7 +784,7 @@ def parse_download_url(raw):
 
 
 NAYAN_API_BASE = "https://nayan-video-downloader.vercel.app"
-NAYAN_AUDIO_COMMANDS = {"spotify", "spotifydl", "soundcloud", "sc"}
+NAYAN_AUDIO_COMMANDS = {"soundcloud", "sc"}
 
 NAYAN_ENDPOINTS = {
     "api": "alldown",
@@ -811,8 +811,6 @@ NAYAN_ENDPOINTS = {
     "pinterest": "pintarest",
     "soundcloud": "soundcloud",
     "sc": "soundcloud",
-    "spotify": "spotifyDl",
-    "spotifydl": "spotifyDl",
     "terabox": "terabox",
     "tera": "terabox",
     "gdrive": "GDLink",
@@ -2110,6 +2108,8 @@ async def handler(event):
         await download_link(event, rest)
     elif name == "mp3":
         await download_mp3(event, rest)
+    elif name in {"spotify", "spotifydl"}:
+        await event.reply(tg_code("Spotify is not returning downloadable links from the Nayan API right now."))
     elif name in NAYAN_ENDPOINTS:
         await nayan_download_link(event, rest, name)
     elif name == "144p":
