@@ -36,10 +36,16 @@ sudo apt install ffmpeg
 
 ## Run
 
-Run the unified TopUser bot:
+Run the unified TopUser bot with environment variables:
 
 ```bash
 TG_API_ID=123456 TG_API_HASH=your_api_hash python3 TopUser.py
+```
+
+Or pass API ID/hash as command-line arguments:
+
+```bash
+python3 TopUser.py 123456 your_api_hash
 ```
 
 Optional standalone Telegram Terminal only:
@@ -54,38 +60,23 @@ Get `TG_API_ID` and `TG_API_HASH` from https://my.telegram.org/apps.
 
 ## Startup
 
-When TopUser starts, it asks whether it should keep your account online while the Python process is running:
+TopUser starts directly and opens a local CLI in the same terminal after login:
 
 ```text
-Keep account online while TopUser is running? [yes/no]:
+topuser>
 ```
 
-Answer `yes` to enable it, or `no` to leave presence normal. When enabled, TopUser refreshes online status every 10 seconds by default. Change the interval with `TOPUSER_ONLINE_REFRESH_SECONDS`; values below 10 seconds are raised to 10 seconds.
+Saved Messages receives a startup notice with `.help` and `$help` pointers. The local terminal is also used for logs and CLI input.
 
-For real 24/7 uptime, keep the Python process running on a VPS, tmux, screen, systemd, or another process manager.
-
-Saved Messages receives:
+Online presence is disabled by default. Enable or disable it from the local CLI:
 
 ```text
-🟢 TopUser is online
-
-Personal Userbot
-Prefix: .
-Help: .help
-
-Telegram Terminal
-Prefix: $
-Help: $help
+.alwaysonline on
+.alwaysonline off
+.alwaysonline status
 ```
 
-The local terminal is cleared and becomes a log view:
-
-```text
-TopUser running
-Personal Userbot: prefix . | help .help
-Telegram Terminal: prefix $ | help $help
-Logs:
-```
+When enabled, TopUser refreshes online status every 10 seconds by default. Change the interval with `TOPUSER_ONLINE_REFRESH_SECONDS`; values below 10 seconds are raised to 10 seconds. For real 24/7 uptime, keep the Python process running on a VPS, tmux, screen, systemd, or another process manager.
 
 ## Personal Userbot
 
@@ -118,7 +109,7 @@ Links
 
 ```text
 .cleanurl URL         remove tracking params from URL
-.vegadata            show @vegadata YouTube subscribers
+say Vega/VegaData    show @vegadata YouTube subscribers
 .download URL         download video with Nayan API
 .mp3 URL              get audio using API when available
 add mp3 after any API shortcut to request audio
@@ -126,6 +117,18 @@ add mp3 after any API shortcut to request audio
 .yt/.ig/.fb/.x URL    API shortcuts for social links
 .pin/.capcut/.soundcloud URL and more API shortcuts
 ```
+
+VegaData is triggered by normal outgoing text, not a command. It matches `vega`, `vegadata`, `vega data`, `vegadados`, and `vega dados`, case-insensitively. The response caption is:
+
+```text
+VegaData
+Subscribers: 99.969
+
+Eu preciso da festinha
+https://youtube.com/@vegadata
+```
+
+Downloader captions include available metadata such as title, source, author, duration, quality, views, likes, and the clickable credit `TopUser by trwste`.
 
 Media
 
@@ -145,7 +148,66 @@ Chat
 
 `.exportchat` creates a Telegram-style dark HTML archive with chat bubbles, a top search bar, the chat/group name, low-quality user avatars, messages grouped by day, and user filters. Use `.exportchat --media` to receive a ZIP with `index.html` plus downloaded media/docs. It works in normal groups and topic groups. `.cancelexport` stops the running export and immediately sends the partial HTML collected so far.
 
-Generated `.q`, `.144p`, `.download`, `.exportchat` HTML/ZIP, and API shortcut fallback files are deleted after they are sent to Telegram.
+## Local CLI
+
+The local CLI appears in the terminal as `topuser>` while `TopUser.py` is running. It controls the logged-in account without sending Telegram command messages.
+
+```text
+.help                         show local CLI help
+.me                           show logged account
+.say <text> <chat>            send text to chat/user/group
+.say <chat> <text>            same, when chat is first
+.delete <chat> <msg_id...>    delete one or more messages
+.delete <msg_id...> <chat>    same, when chat is last
+.file <chat> <path> [caption] send a local file
+.pwd                          show local CLI folder
+.cd <path>                    change local CLI folder
+.clear                        clear local terminal screen
+.clear logs                   delete files from logs/
+.logs clear                   same as .clear logs
+.alwaysonline on|off|status   control online presence refresh
+.shell <command>              run local shell command
+!<command>                    shortcut for .shell
+exit | quit                   disconnect and close
+```
+
+Examples:
+
+```text
+.say @username oi
+.say oi 123456789
+.delete @chatmandyfinds 22877
+.delete 22877 @chatmandyfinds
+.file @username ./photo.jpg legenda
+.pwd
+.cd /sdcard/Download
+.file @username video.mp4
+.alwaysonline on
+```
+
+For Telegram message links, use the username and numeric message ID. Example: `https://t.me/chatmandyfinds/22877` becomes:
+
+```text
+.delete @chatmandyfinds 22877
+```
+
+Deletion depends on Telegram permissions. Your account can delete its own messages and messages in chats where it has permission to delete.
+
+### TAB autocomplete
+
+The local CLI enables `TAB` completion when Python has `readline` support. It completes local commands and file paths for `.file`, `.sendfile`, `.cd`, `.shell`, and `!`.
+
+```text
+.fi<TAB>
+.file @chat ../Down<TAB>
+.cd /sdcard/Down<TAB>
+.shell ./scr<TAB>
+!./scr<TAB>
+```
+
+`/` is kept inside the path token, so `../name<TAB>` and absolute paths complete outside the bot folder. Use `.cd` to change the base folder used by relative paths.
+
+Generated `.q`, `.144p`, `.download`, `.mp3`, `.exportchat` HTML/ZIP, and API shortcut fallback files are deleted after they are sent to Telegram.
 
 ## Telegram Terminal
 
@@ -257,4 +319,4 @@ README.md             documentation
 
 This is a userbot and runs on your Telegram account. Keep session files private. The repository ignores virtualenvs, Telegram sessions, caches, downloads, and logs.
 
-`.download`, `.mp3`, `.api`, and shortcuts such as `.yt`, `.tiktok`, `.ig`, `.fb`, `.x`, `.pin`, `.capcut`, `.soundcloud`, `.terabox`, `.gdrive`, and `.ndown` use the Nayan Video Downloader API. Platform shortcuts use the matching API endpoints when available, including `/instagram` for Instagram links. Audio mode is API-only: use `.mp3 URL` or add `mp3` after any API shortcut; the API may return MP3, M4A, AAC, OGG, WAV, or OPUS depending on the source. Credit for downloader responses goes to the Nayan API service.
+`.download`, `.mp3`, `.api`, and shortcuts such as `.yt`, `.tiktok`, `.ig`, `.fb`, `.x`, `.pin`, `.capcut`, `.soundcloud`, `.terabox`, `.gdrive`, and `.ndown` use the Nayan Video Downloader API. Platform shortcuts use the matching API endpoints when available, including `/instagram` for Instagram links. Audio mode is API-only: use `.mp3 URL` or add `mp3` after any API shortcut; the API may return MP3, M4A, AAC, OGG, WAV, or OPUS depending on the source. Downloader captions show metadata when the API returns it and include `TopUser by trwste`. Credit for downloader responses goes to the Nayan API service.
