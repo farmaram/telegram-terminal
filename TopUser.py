@@ -375,13 +375,15 @@ async def clean_url_message(event, raw):
 
 def startup_notice_text():
     return (
-        "🟢 TopUser is online\n\n"
-        "Personal Userbot\n"
-        "Prefix: .\n"
-        "Help: .help\n\n"
-        "Telegram Terminal\n"
-        "Prefix: $\n"
-        "Help: $help"
+        f"{TOPUSER_ASCII}\n\n"
+        "TopUser is online.\n\n"
+        "Personal userbot commands:\n"
+        "  .help  - open the TopUser command menu\n\n"
+        "Telegram Terminal commands:\n"
+        "  $help  - open the terminal command menu\n\n"
+        "Prefixes:\n"
+        "  . for TopUser\n"
+        "  $ for Telegram Terminal"
     )
 
 
