@@ -10,10 +10,11 @@ import tempfile
 import textwrap
 import urllib.request
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
 from telethon import TelegramClient, events
 from telethon.tl import functions
 from telethon.tl.types import DocumentAttributeSticker, DocumentAttributeVideo, InputStickerSetEmpty
@@ -110,6 +111,9 @@ client = TelegramClient(SESSION_NAME, api_id, api_hash)
 AVATAR_CACHE = {}
 ACTIVE_SPAMS = {}
 ACTIVE_EXPORTS = {}
+VEGADATA_CHANNEL_ID = "UCd2FHKnQ3ymrNhdsV9J0VmA"
+VEGADATA_CHANNEL_URL = "https://youtube.com/@vegadata"
+VEGADATA_COUNTER_URL = f"https://mixerno.space/api/youtube-channel-counter/user/{VEGADATA_CHANNEL_ID}"
 
 
 TOPUSER_ASCII = r"""
@@ -147,6 +151,7 @@ Spam
 
 Links
   .cleanurl URL         remove tracking params from URL
+  .vegadata            show @vegadata YouTube subscribers
   .download URL         download video with Nayan API
   .mp3 URL              get audio using API when available
   add mp3 after any API shortcut to request audio
@@ -432,11 +437,13 @@ def quote_font_candidates(bold=False):
     env_dir = os.environ.get("TOPUSER_FONT_DIR", "").strip()
     roots = [Path.cwd(), Path(__file__).resolve().parent]
     names = [
-        "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
+        "Lato-Bold.ttf" if bold else "Lato-Regular.ttf",
+        "Inter-Bold.ttf" if bold else "Inter-Regular.ttf",
+        "Roboto-Bold.ttf" if bold else "Roboto-Regular.ttf",
         "NotoSans-Bold.ttf" if bold else "NotoSans-Regular.ttf",
+        "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
         "Arial Bold.ttf" if bold else "Arial.ttf",
         "LiberationSans-Bold.ttf" if bold else "LiberationSans-Regular.ttf",
-        "Roboto-Bold.ttf" if bold else "Roboto-Regular.ttf",
     ]
 
     if env_dir:
@@ -448,6 +455,7 @@ def quote_font_candidates(bold=False):
                 yield folder / name
 
     system_dirs = [
+        Path("/usr/share/fonts/truetype/lato"),
         Path("/usr/share/fonts/truetype/dejavu"),
         Path("/usr/share/fonts/truetype/noto"),
         Path("/usr/share/fonts/truetype/liberation2"),
@@ -500,6 +508,71 @@ def multiline_size(draw, text, font, spacing=8):
     return box[2] - box[0], box[3] - box[1]
 
 
+def text_size(draw, text, font):
+    box = draw.textbbox((0, 0), text, font=font)
+    return box[2] - box[0], box[3] - box[1]
+
+
+def wrap_text_to_width(draw, text, font, max_width):
+    lines = []
+
+    for raw_line in text.splitlines() or [""]:
+        words = raw_line.split()
+
+        if not words:
+            lines.append("")
+            continue
+
+        line = ""
+
+        for word in words:
+            candidate = word if not line else f"{line} {word}"
+
+            if text_size(draw, candidate, font)[0] <= max_width:
+                line = candidate
+                continue
+
+            if line:
+                lines.append(line)
+                line = ""
+
+            current = ""
+
+            for char in word:
+                piece = current + char
+
+                if text_size(draw, piece, font)[0] <= max_width:
+                    current = piece
+                else:
+                    if current:
+                        lines.append(current)
+                    current = char
+
+            line = current
+
+        lines.append(line)
+
+    return "\n".join(lines).strip()
+
+
+
+def draw_rounded_shadow(base, box, radius=34, shadow_offset=(0, 10), blur=18, alpha=120):
+    x1, y1, x2, y2 = box
+    w = x2 - x1
+    h = y2 - y1
+    shadow = Image.new("RGBA", (w + blur * 4, h + blur * 4), (0, 0, 0, 0))
+    mask = Image.new("L", shadow.size, 0)
+    draw = ImageDraw.Draw(mask)
+    origin = blur * 2
+    draw.rounded_rectangle(
+        (origin + shadow_offset[0], origin + shadow_offset[1], origin + shadow_offset[0] + w, origin + shadow_offset[1] + h),
+        radius=radius,
+        fill=alpha,
+    )
+    shadow.putalpha(mask.filter(ImageFilter.GaussianBlur(blur)))
+    base.alpha_composite(shadow, (x1 - origin, y1 - origin))
+
+
 def circle_crop(image, size):
     image = ImageOps.fit(image.convert("RGBA"), (size, size), method=Image.Resampling.LANCZOS)
     mask = Image.new("L", (size, size), 0)
@@ -508,6 +581,163 @@ def circle_crop(image, size):
     output = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     output.paste(image, (0, 0), mask)
     return output
+
+
+def compact_stat(value):
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return "0"
+
+    return f"{value:,}".replace(",", ".")
+
+
+def mixerno_value(items, name, default=None):
+    if not isinstance(items, list):
+        return default
+
+    for item in items:
+        if isinstance(item, dict) and item.get("value") == name:
+            return item.get("count", default)
+
+    return default
+
+
+def fetch_vegadata_stats():
+    request = urllib.request.Request(
+        VEGADATA_COUNTER_URL,
+        headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+        method="GET",
+    )
+
+    with urllib.request.urlopen(request, timeout=30) as response:
+        data = json.loads(response.read().decode("utf-8", errors="replace"))
+
+    if not isinstance(data, dict):
+        raise RuntimeError("counter API returned an invalid response")
+
+    subscribers = mixerno_value(data.get("counts"), "subscribers")
+    if subscribers is None:
+        subscribers = mixerno_value(data.get("counts"), "apisubscribers")
+
+    if subscribers is None:
+        raise RuntimeError("counter API did not return subscribers")
+
+    return {
+        "name": mixerno_value(data.get("user"), "name", "VegaData"),
+        "avatar_url": mixerno_value(data.get("user"), "pfp"),
+        "subscribers": int(subscribers),
+        "views": mixerno_value(data.get("counts"), "views"),
+        "videos": mixerno_value(data.get("counts"), "videos"),
+        "goal": mixerno_value(data.get("counts"), "goal"),
+    }
+
+
+def fetch_remote_image(url):
+    if not url:
+        return None
+
+    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"}, method="GET")
+
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return Image.open(BytesIO(response.read())).convert("RGBA")
+
+
+def draw_youtube_mark(draw, x, y, w, h):
+    draw.rounded_rectangle((x, y, x + w, y + h), radius=18, fill=(255, 0, 0, 255))
+    cx = x + w // 2 + 4
+    cy = y + h // 2
+    draw.polygon([(cx - 13, cy - 17), (cx - 13, cy + 17), (cx + 20, cy)], fill=(255, 255, 255, 255))
+
+
+def render_vegadata_card(stats):
+    QUOTE_DIR.mkdir(parents=True, exist_ok=True)
+    width, height = 1120, 630
+    image = Image.new("RGBA", (width, height), (6, 7, 10, 255))
+    draw = ImageDraw.Draw(image)
+
+    for y in range(height):
+        r = 6 + int(y * 10 / height)
+        g = 7 + int(y * 12 / height)
+        b = 10 + int(y * 20 / height)
+        draw.line((0, y, width, y), fill=(r, g, b, 255))
+
+    draw.rounded_rectangle((48, 48, width - 48, height - 48), radius=42, fill=(18, 20, 26, 245), outline=(255, 255, 255, 18), width=1)
+    draw_rounded_shadow(image, (74, 80, width - 74, height - 76), radius=34, shadow_offset=(0, 14), blur=22, alpha=100)
+    draw.rounded_rectangle((74, 80, width - 74, height - 76), radius=34, fill=(25, 27, 34, 255), outline=(255, 255, 255, 22), width=1)
+
+    avatar_image = fetch_remote_image(stats.get("avatar_url"))
+    avatar_size = 174
+    avatar_x = 116
+    avatar_y = 128
+    draw.ellipse((avatar_x - 8, avatar_y - 8, avatar_x + avatar_size + 8, avatar_y + avatar_size + 8), fill=(255, 255, 255, 28))
+
+    if avatar_image is not None:
+        image.alpha_composite(circle_crop(avatar_image, avatar_size), (avatar_x, avatar_y))
+    else:
+        draw.ellipse((avatar_x, avatar_y, avatar_x + avatar_size, avatar_y + avatar_size), fill=(50, 54, 68, 255))
+        fallback_font = load_quote_font(64, bold=True)
+        initials = avatar_initials(stats.get("name", "VegaData"))
+        tw, th = text_size(draw, initials, fallback_font)
+        draw.text((avatar_x + (avatar_size - tw) / 2, avatar_y + (avatar_size - th) / 2 - 4), initials, font=fallback_font, fill=(245, 247, 250, 255))
+
+    draw_youtube_mark(draw, 116, 344, 82, 58)
+
+    name_font = load_quote_font(54, bold=True)
+    label_font = load_quote_font(26, bold=True)
+    big_font = load_quote_font(118, bold=True)
+    small_font = load_quote_font(25)
+    stat_font = load_quote_font(33, bold=True)
+
+    draw.text((224, 344), stats.get("name") or "VegaData", font=name_font, fill=(248, 249, 252, 255))
+    draw.text((224, 405), "youtube.com/@vegadata", font=small_font, fill=(155, 162, 176, 255))
+
+    right_x = 405
+    draw.text((right_x, 124), "INSCRITOS", font=label_font, fill=(255, 74, 74, 255))
+    draw.text((right_x, 163), compact_stat(stats.get("subscribers")), font=big_font, fill=(255, 255, 255, 255))
+
+    updated = datetime.now().strftime("%d/%m/%Y %H:%M")
+    draw.text((right_x, 300), f"Atualizado em {updated}", font=small_font, fill=(139, 145, 158, 255))
+
+    y = 472
+    cards = [
+        ("VIDEOS", compact_stat(stats.get("videos"))),
+        ("VIEWS", compact_stat(stats.get("views"))),
+        ("META", f"+{compact_stat(stats.get('goal'))}" if stats.get("goal") is not None else "--"),
+    ]
+    card_w = 246
+    for index, (label, value) in enumerate(cards):
+        x = 116 + index * (card_w + 28)
+        draw.rounded_rectangle((x, y, x + card_w, y + 84), radius=22, fill=(34, 37, 47, 255), outline=(255, 255, 255, 16), width=1)
+        draw.text((x + 22, y + 16), label, font=small_font, fill=(132, 139, 153, 255))
+        draw.text((x + 22, y + 45), value, font=stat_font, fill=(240, 242, 246, 255))
+
+    path = QUOTE_DIR / f"vegadata-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.png"
+    image.convert("RGB").save(path, "PNG")
+    return path
+
+
+async def send_vegadata(event):
+    status = await event.reply(tg_code("fetching @vegadata subscribers..."))
+    path = None
+
+    try:
+        stats = await asyncio.to_thread(fetch_vegadata_stats)
+        path = await asyncio.to_thread(render_vegadata_card, stats)
+        caption = f"VegaData\nSubscribers: {compact_stat(stats.get('subscribers'))}\n{VEGADATA_CHANNEL_URL}"
+        await client.send_file(
+            event.chat_id,
+            str(path),
+            caption=caption,
+            force_document=False,
+            reply_to=topic_reply_to(event),
+        )
+        await status.delete()
+        log(f".vegadata sent in chat {event.chat_id}: {stats.get('subscribers')}")
+    except Exception as e:
+        await status.edit(tg_code(f".vegadata failed: {e}"))
+    finally:
+        cleanup_files(path)
 
 
 async def get_sender_avatar(sender, name, size=104):
@@ -1292,75 +1522,96 @@ def author_color(name):
 
 
 def quote_bubble_image(author, text, avatar, media_image=None):
-    name_font = load_quote_font(30, bold=True)
-    text_font = load_quote_font(36)
-    meta_font = load_quote_font(20)
+    name_font = load_quote_font(34, bold=True)
+    text_font = load_quote_font(38)
+    time_font = load_quote_font(22)
 
-    text = fit_quote_text(text)
-    wrapped_parts = [textwrap.fill(part, width=32) for part in text.splitlines()]
-    wrapped = "\n".join(wrapped_parts).strip()
-    media = fit_media_image(media_image, max_width=720, max_height=440) if media_image is not None else None
+    text = fit_quote_text(text, max_chars=850)
+    avatar_size = 104
+    gap = 16
+    max_content_w = 690
+    bubble_pad_x = 30
+    bubble_pad_top = 24
+    bubble_pad_bottom = 28
+    line_spacing = 11
 
     dummy = Image.new("RGBA", (1, 1))
-    draw = ImageDraw.Draw(dummy)
-    text_w, text_h = multiline_size(draw, wrapped, text_font, spacing=10) if wrapped else (0, 0)
-    name_w, name_h = multiline_size(draw, author, name_font, spacing=0)
-    media_w, media_h = media.size if media else (0, 0)
-    body_w = max(text_w, media_w, name_w, 260)
+    measure = ImageDraw.Draw(dummy)
+    wrapped = wrap_text_to_width(measure, text, text_font, max_content_w) if text else ""
+    media = fit_media_image(media_image, max_width=max_content_w, max_height=430) if media_image is not None else None
 
-    avatar_size = 96
-    gap = 18
-    bubble_pad_x = 28
-    bubble_pad_y = 22
-    content_gap = 18 if wrapped and media else 0
-    bubble_w = min(900, body_w + bubble_pad_x * 2)
-    bubble_h = bubble_pad_y * 2 + name_h + 14 + media_h + content_gap + text_h + 30
-    width = avatar_size + gap + bubble_w + 28
-    height = max(avatar_size + 26, bubble_h + 26)
+    text_w, text_h = multiline_size(measure, wrapped, text_font, spacing=line_spacing) if wrapped else (0, 0)
+    name_w, name_h = text_size(measure, author, name_font)
+    media_w, media_h = media.size if media else (0, 0)
+    content_w = max(text_w, media_w, min(name_w, max_content_w), 260)
+    bubble_w = min(max_content_w + bubble_pad_x * 2, max(360, content_w + bubble_pad_x * 2))
+    content_w = bubble_w - bubble_pad_x * 2
+
+    if text_w > content_w and wrapped:
+        wrapped = wrap_text_to_width(measure, text, text_font, content_w)
+        text_w, text_h = multiline_size(measure, wrapped, text_font, spacing=line_spacing)
+
+    media_gap = 18 if media and wrapped else 0
+    text_gap = 12 if wrapped else 0
+    footer_h = 22
+    bubble_h = bubble_pad_top + name_h + 12 + media_h + media_gap + text_h + text_gap + footer_h + bubble_pad_bottom
+    width = 18 + avatar_size + gap + bubble_w + 20
+    height = max(avatar_size + 30, bubble_h + 34)
 
     image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
 
-    avatar_x = 12
-    avatar_y = height - avatar_size - 14
+    bubble_x = 18 + avatar_size + gap
+    bubble_y = 14
+    bubble_box = (bubble_x, bubble_y, bubble_x + bubble_w, bubble_y + bubble_h)
+    bubble_fill = (30, 31, 36, 248)
+    draw_rounded_shadow(image, bubble_box, radius=34, shadow_offset=(0, 9), blur=18, alpha=115)
+    draw.rounded_rectangle(bubble_box, radius=34, fill=bubble_fill)
+    draw.rounded_rectangle((bubble_x + 1, bubble_y + 1, bubble_x + bubble_w - 1, bubble_y + bubble_h - 1), radius=33, outline=(255, 255, 255, 18), width=1)
+    draw.polygon(
+        [
+            (bubble_x + 10, bubble_y + bubble_h - 48),
+            (bubble_x - 18, bubble_y + bubble_h - 25),
+            (bubble_x + 18, bubble_y + bubble_h - 22),
+        ],
+        fill=bubble_fill,
+    )
+
+    avatar_x = 14
+    avatar_y = bubble_y + bubble_h - avatar_size - 8
+    draw.ellipse((avatar_x - 3, avatar_y - 3, avatar_x + avatar_size + 3, avatar_y + avatar_size + 3), fill=(255, 255, 255, 32))
     avatar = avatar.resize((avatar_size, avatar_size), Image.Resampling.LANCZOS)
     image.alpha_composite(avatar, (avatar_x, avatar_y))
 
-    bubble_x = avatar_x + avatar_size + gap
-    bubble_y = 10
-    draw.rounded_rectangle((bubble_x, bubble_y, bubble_x + bubble_w, bubble_y + bubble_h), radius=30, fill=(20, 20, 22, 255))
-    draw.polygon(
-        [
-            (bubble_x + 8, bubble_y + bubble_h - 42),
-            (bubble_x - 20, bubble_y + bubble_h - 20),
-            (bubble_x + 16, bubble_y + bubble_h - 18),
-        ],
-        fill=(20, 20, 22, 255),
-    )
-
     x = bubble_x + bubble_pad_x
-    y = bubble_y + bubble_pad_y
-    draw.text((x, y), author, font=name_font, fill=author_color(author))
-    y += name_h + 14
+    y = bubble_y + bubble_pad_top
+    safe_author = author.strip() or "User"
+    if text_size(measure, safe_author, name_font)[0] > content_w:
+        while safe_author and text_size(measure, safe_author + "...", name_font)[0] > content_w:
+            safe_author = safe_author[:-1]
+        safe_author = safe_author.rstrip() + "..."
+
+    draw.text((x, y), safe_author, font=name_font, fill=author_color(author))
+    y += name_h + 12
 
     if media:
         image.alpha_composite(media, (x, y))
-        y += media.size[1] + content_gap
+        y += media_h + media_gap
 
     if wrapped:
-        draw.text((x, y), wrapped, font=text_font, fill=(245, 245, 247, 255), spacing=10)
+        draw.multiline_text((x, y), wrapped, font=text_font, fill=(246, 247, 249, 255), spacing=line_spacing)
+        y += text_h + text_gap
 
     timestamp = datetime.now().strftime("%H:%M")
-    time_box = draw.textbbox((0, 0), timestamp, font=meta_font)
+    time_w, time_h = text_size(measure, timestamp, time_font)
     draw.text(
-        (bubble_x + bubble_w - (time_box[2] - time_box[0]) - 22, bubble_y + bubble_h - 32),
+        (bubble_x + bubble_w - time_w - 24, bubble_y + bubble_h - time_h - 16),
         timestamp,
-        font=meta_font,
-        fill=(158, 158, 166, 255),
+        font=time_font,
+        fill=(152, 156, 166, 230),
     )
 
     return image
-
 
 def create_quote_image(author, text, avatar, media_image=None):
     return create_quote_stack([
@@ -2106,6 +2357,12 @@ async def handler(event):
                 ACTIVE_SPAMS.pop(active_key, None)
     elif name == "cleanurl":
         await clean_url_message(event, rest)
+    elif name == "vegadata":
+        if rest.strip():
+            await event.reply(tg_code("Use only: .vegadata"))
+            return
+
+        await send_vegadata(event)
     elif name == "download":
         await download_link(event, rest)
     elif name == "mp3":

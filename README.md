@@ -118,6 +118,7 @@ Links
 
 ```text
 .cleanurl URL         remove tracking params from URL
+.vegadata            show @vegadata YouTube subscribers
 .download URL         download video with Nayan API
 .mp3 URL              get audio using API when available
 add mp3 after any API shortcut to request audio
