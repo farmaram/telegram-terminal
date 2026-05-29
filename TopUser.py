@@ -8,6 +8,7 @@ import re
 import shutil
 import tempfile
 import textwrap
+import unicodedata
 import urllib.request
 from datetime import datetime
 from io import BytesIO
@@ -437,11 +438,11 @@ def quote_font_candidates(bold=False):
     env_dir = os.environ.get("TOPUSER_FONT_DIR", "").strip()
     roots = [Path.cwd(), Path(__file__).resolve().parent]
     names = [
-        "Lato-Bold.ttf" if bold else "Lato-Regular.ttf",
-        "Inter-Bold.ttf" if bold else "Inter-Regular.ttf",
-        "Roboto-Bold.ttf" if bold else "Roboto-Regular.ttf",
-        "NotoSans-Bold.ttf" if bold else "NotoSans-Regular.ttf",
         "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
+        "NotoSans-Bold.ttf" if bold else "NotoSans-Regular.ttf",
+        "Roboto-Bold.ttf" if bold else "Roboto-Regular.ttf",
+        "Inter-Bold.ttf" if bold else "Inter-Regular.ttf",
+        "Lato-Bold.ttf" if bold else "Lato-Regular.ttf",
         "Arial Bold.ttf" if bold else "Arial.ttf",
         "LiberationSans-Bold.ttf" if bold else "LiberationSans-Regular.ttf",
     ]
@@ -494,13 +495,45 @@ def load_quote_font(size, bold=False):
     return ImageFont.load_default()
 
 
+def visible_text(value, keep_newlines=False):
+    output = []
+
+    for char in str(value or ""):
+        if keep_newlines and char in "\n\t\u200d":
+            output.append(char)
+            continue
+
+        category = unicodedata.category(char)
+
+        if category in {"Cf", "Cc", "Cs"}:
+            continue
+
+        output.append(char)
+
+    return "".join(output).strip()
+
+
 def avatar_initials(name):
+    name = visible_text(name)
     parts = [p for p in re.split(r"\s+", name.strip()) if p]
 
     if not parts:
         return "?"
 
     return "".join(p[0].upper() for p in parts[:2])
+
+
+def trim_transparent(image, padding=2):
+    bbox = image.getbbox()
+
+    if not bbox:
+        return image
+
+    left = max(0, bbox[0] - padding)
+    top = max(0, bbox[1] - padding)
+    right = min(image.size[0], bbox[2] + padding)
+    bottom = min(image.size[1], bbox[3] + padding)
+    return image.crop((left, top, right, bottom))
 
 
 def multiline_size(draw, text, font, spacing=8):
@@ -1522,18 +1555,19 @@ def author_color(name):
 
 
 def quote_bubble_image(author, text, avatar, media_image=None):
-    name_font = load_quote_font(34, bold=True)
-    text_font = load_quote_font(38)
-    time_font = load_quote_font(22)
+    name_font = load_quote_font(32, bold=True)
+    text_font = load_quote_font(36)
+    time_font = load_quote_font(21)
 
-    text = fit_quote_text(text, max_chars=850)
-    avatar_size = 104
-    gap = 16
-    max_content_w = 690
-    bubble_pad_x = 30
-    bubble_pad_top = 24
-    bubble_pad_bottom = 28
-    line_spacing = 11
+    author = visible_text(author) or "User"
+    text = fit_quote_text(visible_text(text, keep_newlines=True), max_chars=850)
+    avatar_size = 92
+    gap = 12
+    max_content_w = 640
+    bubble_pad_x = 24
+    bubble_pad_top = 18
+    bubble_pad_bottom = 20
+    line_spacing = 8
 
     dummy = Image.new("RGBA", (1, 1))
     measure = ImageDraw.Draw(dummy)
@@ -1543,8 +1577,8 @@ def quote_bubble_image(author, text, avatar, media_image=None):
     text_w, text_h = multiline_size(measure, wrapped, text_font, spacing=line_spacing) if wrapped else (0, 0)
     name_w, name_h = text_size(measure, author, name_font)
     media_w, media_h = media.size if media else (0, 0)
-    content_w = max(text_w, media_w, min(name_w, max_content_w), 260)
-    bubble_w = min(max_content_w + bubble_pad_x * 2, max(360, content_w + bubble_pad_x * 2))
+    content_w = max(text_w, media_w, min(name_w, max_content_w), 210)
+    bubble_w = min(max_content_w + bubble_pad_x * 2, max(300, content_w + bubble_pad_x * 2))
     content_w = bubble_w - bubble_pad_x * 2
 
     if text_w > content_w and wrapped:
@@ -1554,15 +1588,15 @@ def quote_bubble_image(author, text, avatar, media_image=None):
     media_gap = 18 if media and wrapped else 0
     text_gap = 12 if wrapped else 0
     footer_h = 22
-    bubble_h = bubble_pad_top + name_h + 12 + media_h + media_gap + text_h + text_gap + footer_h + bubble_pad_bottom
-    width = 18 + avatar_size + gap + bubble_w + 20
-    height = max(avatar_size + 30, bubble_h + 34)
+    bubble_h = bubble_pad_top + name_h + 10 + media_h + media_gap + text_h + text_gap + footer_h + bubble_pad_bottom
+    width = 10 + avatar_size + gap + bubble_w + 12
+    height = max(avatar_size + 18, bubble_h + 22)
 
     image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
 
-    bubble_x = 18 + avatar_size + gap
-    bubble_y = 14
+    bubble_x = 10 + avatar_size + gap
+    bubble_y = 8
     bubble_box = (bubble_x, bubble_y, bubble_x + bubble_w, bubble_y + bubble_h)
     bubble_fill = (30, 31, 36, 248)
     draw_rounded_shadow(image, bubble_box, radius=34, shadow_offset=(0, 9), blur=18, alpha=115)
@@ -1577,22 +1611,22 @@ def quote_bubble_image(author, text, avatar, media_image=None):
         fill=bubble_fill,
     )
 
-    avatar_x = 14
-    avatar_y = bubble_y + bubble_h - avatar_size - 8
+    avatar_x = 6
+    avatar_y = bubble_y + bubble_h - avatar_size - 5
     draw.ellipse((avatar_x - 3, avatar_y - 3, avatar_x + avatar_size + 3, avatar_y + avatar_size + 3), fill=(255, 255, 255, 32))
     avatar = avatar.resize((avatar_size, avatar_size), Image.Resampling.LANCZOS)
     image.alpha_composite(avatar, (avatar_x, avatar_y))
 
     x = bubble_x + bubble_pad_x
     y = bubble_y + bubble_pad_top
-    safe_author = author.strip() or "User"
+    safe_author = visible_text(author) or "User"
     if text_size(measure, safe_author, name_font)[0] > content_w:
         while safe_author and text_size(measure, safe_author + "...", name_font)[0] > content_w:
             safe_author = safe_author[:-1]
         safe_author = safe_author.rstrip() + "..."
 
     draw.text((x, y), safe_author, font=name_font, fill=author_color(author))
-    y += name_h + 12
+    y += name_h + 10
 
     if media:
         image.alpha_composite(media, (x, y))
@@ -1611,7 +1645,7 @@ def quote_bubble_image(author, text, avatar, media_image=None):
         fill=(152, 156, 166, 230),
     )
 
-    return image
+    return trim_transparent(image, padding=1)
 
 def create_quote_image(author, text, avatar, media_image=None):
     return create_quote_stack([
@@ -1648,23 +1682,19 @@ def create_quote_stack(items):
 
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     path = QUOTE_DIR / f"quote-{stamp}.png"
+    image = trim_transparent(image, padding=1)
     image.save(path)
     return path
 
 def create_quote_sticker(png_path):
-    image = Image.open(png_path).convert("RGBA")
+    image = trim_transparent(Image.open(png_path).convert("RGBA"), padding=1)
     width, height = image.size
     scale = min(512 / width, 512 / height, 1)
     sticker_size = (max(1, int(width * scale)), max(1, int(height * scale)))
     image = image.resize(sticker_size, Image.Resampling.LANCZOS)
 
-    canvas = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
-    x = (512 - sticker_size[0]) // 2
-    y = (512 - sticker_size[1]) // 2
-    canvas.alpha_composite(image, (x, y))
-
     webp_path = png_path.with_suffix(".webp")
-    canvas.save(webp_path, "WEBP", lossless=True, quality=90, method=3)
+    image.save(webp_path, "WEBP", lossless=True, quality=92, method=4)
     return webp_path
 
 
@@ -1672,22 +1702,27 @@ def display_name(entity, fallback="User"):
     if not entity:
         return fallback
 
-    title = getattr(entity, "title", None)
+    title = visible_text(getattr(entity, "title", None))
 
     if title:
         return title
 
-    first = getattr(entity, "first_name", None) or ""
-    last = getattr(entity, "last_name", None) or ""
+    first = visible_text(getattr(entity, "first_name", None))
+    last = visible_text(getattr(entity, "last_name", None))
     name = f"{first} {last}".strip()
 
     if name:
         return name
 
-    username = getattr(entity, "username", None)
+    username = visible_text(getattr(entity, "username", None))
 
     if username:
         return f"@{username}"
+
+    entity_id = getattr(entity, "id", None)
+
+    if entity_id:
+        return f"User {entity_id}"
 
     return fallback
 
@@ -1718,6 +1753,8 @@ async def forwarded_sender(reply):
             pass
 
     from_name = getattr(forward, "from_name", None)
+
+    from_name = visible_text(from_name)
 
     if from_name:
         return None, from_name
