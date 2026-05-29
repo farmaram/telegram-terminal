@@ -65,9 +65,45 @@ TRACKING_PARAMS = {
     "rdid",
     "sfnsn",
 }
-DROP_ALL_QUERY_DOMAINS = ("tiktok.com", "instagram.com")
-FACEBOOK_REDIRECT_HOSTS = {"l.facebook.com", "lm.facebook.com"}
-SHORT_URL_HOSTS = {"vt.tiktok.com", "vm.tiktok.com", "t.tiktok.com", "fb.watch"}
+DROP_ALL_QUERY_DOMAINS = ("tiktok.com", "instagram.com", "x.com", "twitter.com", "threads.net")
+REDIRECT_PARAM_NAMES = {
+    "u",
+    "url",
+    "q",
+    "target",
+    "to",
+    "dest",
+    "destination",
+    "redirect",
+    "redirect_url",
+    "redirect_uri",
+    "link",
+    "r",
+    "adurl",
+}
+REDIRECT_HOST_SUFFIXES = (
+    "google.com",
+    "google.com.br",
+    "bing.com",
+    "duckduckgo.com",
+    "facebook.com",
+    "instagram.com",
+    "tiktok.com",
+    "youtube.com",
+)
+SHORT_URL_HOSTS = {
+    "vt.tiktok.com",
+    "vm.tiktok.com",
+    "t.tiktok.com",
+    "fb.watch",
+    "t.co",
+    "bit.ly",
+    "tinyurl.com",
+    "shorturl.at",
+    "is.gd",
+    "buff.ly",
+    "ow.ly",
+}
 
 client = TelegramClient(SESSION_NAME, api_id, api_hash)
 AVATAR_CACHE = {}
@@ -243,7 +279,7 @@ def host_matches(host, suffix):
 
 def should_resolve_url(url):
     parts = urlsplit(url)
-    return parts.netloc.lower() in SHORT_URL_HOSTS
+    return clean_host(parts.netloc) in SHORT_URL_HOSTS
 
 
 def resolve_redirect_url(url):
@@ -267,23 +303,41 @@ async def resolve_url_if_needed(url):
         return url
 
 
-def clean_tracking_url(url):
+def redirect_target_from_query(host, query_items):
+    if not any(host_matches(host, suffix) for suffix in REDIRECT_HOST_SUFFIXES):
+        return ""
+
+    for key, value in query_items:
+        if key.lower() not in REDIRECT_PARAM_NAMES:
+            continue
+
+        target = unquote(value.strip())
+
+        if extract_url(target):
+            return target
+
+    return ""
+
+
+def clean_tracking_url(url, depth=0):
+    if depth > 5:
+        return url
+
     parts = urlsplit(url)
     host = clean_host(parts.netloc)
     query_items = parse_qsl(parts.query, keep_blank_values=True)
+    target = redirect_target_from_query(host, query_items)
 
-    if host in FACEBOOK_REDIRECT_HOSTS:
-        target = next((value for key, value in query_items if key.lower() in {"u", "url"}), "")
-        if target:
-            return clean_tracking_url(unquote(target))
+    if target:
+        return clean_tracking_url(target, depth + 1)
 
     if any(host_matches(host, suffix) for suffix in DROP_ALL_QUERY_DOMAINS):
-        return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, "", parts.fragment))
 
     query = [
         (key, value)
         for key, value in query_items
-        if not is_tracking_param(key)
+        if value != "" and not is_tracking_param(key)
     ]
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query, doseq=True), parts.fragment))
 
@@ -722,7 +776,7 @@ NAYAN_ENDPOINTS = {
     "alldown": "alldl",
     "video": "alldl",
     "yt": "ytdown",
-    "youtube": "ytdown",
+    "youtube": "youtube",
     "ytdl": "ytdown",
     "tiktok": "tikdown",
     "tiktol": "tikdown",
@@ -730,25 +784,25 @@ NAYAN_ENDPOINTS = {
     "tik": "tikdown",
     "fb": "fbdown2",
     "facebook": "fbdown2",
-    "ig": "alldl",
-    "insta": "alldl",
-    "instagram": "alldl",
-    "x": "alldl",
-    "twitter": "alldl",
-    "tweet": "alldl",
-    "pin": "alldl",
-    "pinterest": "alldl",
-    "threads": "alldl",
-    "thread": "alldl",
-    "soundcloud": "alldl",
-    "sc": "alldl",
-    "likee": "alldl",
-    "terabox": "alldl",
-    "spotify": "alldl",
-    "gdrive": "alldl",
-    "drive": "alldl",
-    "capcut": "alldl",
-    "ndown": "alldl",
+    "ig": "instagram",
+    "insta": "instagram",
+    "instagram": "instagram",
+    "x": "twitterdown",
+    "twitter": "twitterdown",
+    "tweet": "twitterdown",
+    "pin": "pintarest",
+    "pinterest": "pintarest",
+    "threads": "threads",
+    "thread": "threads",
+    "soundcloud": "soundcloud",
+    "sc": "soundcloud",
+    "likee": "likee",
+    "terabox": "terabox",
+    "spotify": "spotifyDl",
+    "gdrive": "GDLink",
+    "drive": "GDLink",
+    "capcut": "capcut",
+    "ndown": "ndown",
 }
 
 

@@ -235,4 +235,4 @@ README.md             documentation
 
 This is a userbot and runs on your Telegram account. Keep session files private. The repository ignores virtualenvs, Telegram sessions, caches, downloads, and logs.
 
-`.download`, `.mp3`, `.api`, and shortcuts such as `.yt`, `.tiktok`, `.ig`, `.fb`, `.x`, `.pin`, `.threads`, and `.capcut` use the Nayan Video Downloader API: https://nayan-video-downloader.vercel.app. Audio mode is API-only: use `.mp3 URL` or `.yt mp3 URL`; the API may return MP3, M4A, AAC, OGG, WAV, or OPUS depending on the source. Credit for downloader responses goes to the Nayan API service.
+`.download`, `.mp3`, `.api`, and shortcuts such as `.yt`, `.tiktok`, `.ig`, `.fb`, `.x`, `.pin`, `.threads`, and `.capcut` use the Nayan Video Downloader API: https://nayan-video-downloader.vercel.app. Platform shortcuts use the matching API endpoints when available, including `/instagram` for Instagram links. Audio mode is API-only: use `.mp3 URL` or `.yt mp3 URL`; the API may return MP3, M4A, AAC, OGG, WAV, or OPUS depending on the source. Credit for downloader responses goes to the Nayan API service.
