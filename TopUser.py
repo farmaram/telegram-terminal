@@ -784,6 +784,8 @@ def parse_download_url(raw):
 
 
 NAYAN_API_BASE = "https://nayan-video-downloader.vercel.app"
+NAYAN_AUDIO_COMMANDS = {"spotify", "spotifydl", "soundcloud", "sc"}
+
 NAYAN_ENDPOINTS = {
     "api": "alldown",
     "all": "alldown",
@@ -1047,7 +1049,7 @@ def download_remote_media(url, output_dir, filename="video.mp4"):
 
 async def nayan_download_link(event, raw_options="", command_name="video"):
     args = (raw_options or "").split()
-    audio_mode = any(arg.lower() in {"mp3", "audio", "music"} for arg in args)
+    audio_mode = command_name in NAYAN_AUDIO_COMMANDS or any(arg.lower() in {"mp3", "audio", "music"} for arg in args)
     cleaned_options = " ".join(arg for arg in args if arg.lower() not in {"mp3", "audio", "music"})
     url = parse_download_url(cleaned_options)
 
@@ -1074,8 +1076,10 @@ async def nayan_download_link(event, raw_options="", command_name="video"):
         media_url = nayan_best_audio_url(data) if audio_mode else nayan_best_media_url(data)
 
         if not media_url:
-            kind = "audio" if audio_mode else "video"
-            await status.edit(tg_code(f"API did not return a downloadable {kind} URL."))
+            if audio_mode:
+                await status.edit(tg_code("API did not return a downloadable audio URL for this link."))
+            else:
+                await status.edit(tg_code("API did not return a downloadable video URL for this link."))
             return
 
         caption = nayan_title(data)
