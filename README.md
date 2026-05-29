@@ -21,7 +21,7 @@ System tools:
 sudo apt install ffmpeg
 ```
 
-`bash` is required for Telegram Terminal. `ffmpeg` is required for video/media commands such as `.144p` and video quote previews. `yt-dlp` is installed by `requirements.txt` for `.download`.
+`bash` is required for Telegram Terminal. `ffmpeg` is required for video/media commands such as `.144p` and video quote previews. Link downloads use the Nayan Video Downloader API and do not require `yt-dlp`.
 
 ## Run
 
@@ -49,7 +49,7 @@ When TopUser starts, it asks whether it should keep your account online while th
 Keep account online while TopUser is running? [yes/no]:
 ```
 
-Answer `yes` to enable it, or `no` to leave presence normal. When enabled, TopUser refreshes online status every 60 seconds by default. Change the interval with `TOPUSER_ONLINE_REFRESH_SECONDS`.
+Answer `yes` to enable it, or `no` to leave presence normal. When enabled, TopUser refreshes online status every 10 seconds by default. Change the interval with `TOPUSER_ONLINE_REFRESH_SECONDS`; values below 10 seconds are raised to 10 seconds.
 
 For real 24/7 uptime, keep the Python process running on a VPS, tmux, screen, systemd, or another process manager.
 
@@ -90,7 +90,6 @@ Quotes
 ```text
 .q                    quote the replied message as sticker
 .q --png              send quote as PNG instead of sticker
-.q --keep             keep generated quote files on disk
 .q N                  quote N messages, max 10
 .q custom text        make a quote from custom text
 .q on selected quote  quote only selected Telegram quote text
@@ -108,18 +107,23 @@ Links
 
 ```text
 .cleanurl URL         remove tracking params from URL
-.download URL         download video from YouTube/TikTok/Instagram
-.download --keep URL  keep downloaded file on disk after sending
+.download URL         download video with Nayan API
+.download --keep URL  keep fallback downloaded file on disk after sending
+.mp3 URL              get audio using API when available
+.yt mp3 URL           get audio using API when available
+.tiktok mp3 URL       get audio using API when available
+.api URL              download with Nayan API for supported sites
+.yt/.ig/.fb/.x URL    API shortcuts for social links
+.pin/.threads/.capcut URL and more API shortcuts
 ```
 
 Media
 
 ```text
 .144p                 reply to media and send a low quality version
-.144p --keep          keep generated media files on disk
 ```
 
-Generated `.q`, `.144p`, and `.download` files are deleted after they are sent to Telegram. Use `--keep` when you want to keep the local output files.
+Generated `.q` and `.144p` files are always deleted after they are sent to Telegram. `.download` and API shortcut fallback files are also deleted after sending unless `--keep` is used.
 
 ## Telegram Terminal
 
@@ -231,4 +235,4 @@ README.md             documentation
 
 This is a userbot and runs on your Telegram account. Keep session files private. The repository ignores virtualenvs, Telegram sessions, caches, downloads, and logs.
 
-`.download` uses `yt-dlp`, so it supports YouTube, TikTok, Instagram, and other supported sites.
+`.download`, `.mp3`, `.api`, and shortcuts such as `.yt`, `.tiktok`, `.ig`, `.fb`, `.x`, `.pin`, `.threads`, and `.capcut` use the Nayan Video Downloader API: https://nayan-video-downloader.vercel.app. Audio mode is API-only: use `.mp3 URL` or `.yt mp3 URL`; the API may return MP3, M4A, AAC, OGG, WAV, or OPUS depending on the source. Credit for downloader responses goes to the Nayan API service.

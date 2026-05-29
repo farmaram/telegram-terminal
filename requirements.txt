@@ -2,4 +2,3 @@ telethon
 pillow
 pexpect
 pyte
-yt-dlp

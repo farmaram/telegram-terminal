@@ -5,7 +5,6 @@ import types
 import os
 import subprocess
 import re
-import sys
 import shutil
 import tempfile
 import textwrap
@@ -30,7 +29,7 @@ MEDIA_DIR = Path("downloads/media")
 DOWNLOAD_DIR = Path("downloads/links")
 MAX_SPAM_COUNT = 1000
 SPAM_DELAY_SECONDS = 0.05
-ONLINE_REFRESH_SECONDS = int(os.environ.get("TOPUSER_ONLINE_REFRESH_SECONDS", "60"))
+ONLINE_REFRESH_SECONDS = max(10, int(os.environ.get("TOPUSER_ONLINE_REFRESH_SECONDS", "10")))
 URL_RE = re.compile(r"https?://[^\s<>()\[\]{}\"']+")
 TRACKING_PARAMS = {
     "fbclid",
@@ -89,7 +88,6 @@ Bot
 Quotes
   .q                    quote the replied message as sticker
   .q --png              send quote as PNG instead of sticker
-  .q --keep             keep generated quote files on disk
   .q N                  quote N messages, max 10
   .q custom text        make a quote from custom text
   .q on selected quote  quote only selected Telegram quote text
@@ -101,15 +99,17 @@ Spam
 
 Links
   .cleanurl URL         remove tracking params from URL
-  .download URL         download video with yt-dlp, API fallback
+  .download URL         download video with Nayan API
   .download --keep URL  keep downloaded file on disk after sending
-  .yt URL               download YouTube using API
-  .tiktok URL           download TikTok using API
-  .tiktol URL           same as .tiktok
+  .mp3 URL              get audio using API when available
+  .yt mp3 URL           get audio using API when available
+  .tiktok mp3 URL       get audio using API when available
+  .api URL              download with Nayan API for supported sites
+  .yt/.ig/.fb/.x URL    API shortcuts for social links
+  .pin/.threads/.capcut URL and more API shortcuts
 
 Media
   .144p                 reply to media and send a low quality version
-  .144p --keep          keep generated media files on disk
 
 Chat
   .exportchat           export current chat/topic as HTML
@@ -118,7 +118,7 @@ Chat
   .cl                   delete your messages in this chat/topic
 
 Files
-  generated media is deleted after sending unless --keep is used"""
+  downloaded files are deleted after sending unless --keep is used"""
 
 
 TELEGRAM_TERMINAL_SOURCE = 'import asyncio\nimport os\nimport socket\nimport time\nimport re\nimport shlex\nimport struct\nimport tempfile\nimport zlib\nfrom datetime import datetime\nfrom pathlib import Path\n\nimport pexpect\nimport pyte\nfrom PIL import Image, ImageDraw, ImageFont\n\nfrom telethon import TelegramClient, events\nfrom telethon.errors import FloodWaitError\n\nclient = None\n\nVERSION = "1.3.0"\nBASE_DIR = Path(__file__).resolve().parent\nEDIT_INTERVAL = 3\nMAX_MESSAGE_OUTPUT = 3900\nMAX_BUFFER_SIZE = 200000\nTERM_COLUMNS = 160\nTERM_LINES = 44\nTERM_SCROLLBACK = 400\nSHOT_RENDER_ROWS = 76\nSHOT_LIVE_SECONDS = 5\nSHOT_LIVE_MAX_SECONDS = 10\nSHOT_LIVE_INTERVAL = 0.2\nSHOT_LIVE_MAX_BYTES = 8 * 1024 * 1024\n\nDONE_MARKER = "__TCM_DONE_982741__"\nMARKER_HOLD_SIZE = len(DONE_MARKER) - 1\n\n\ndef spawn_shell():\n    child = pexpect.spawn(\n        "bash",\n        ["--noprofile", "--norc", "--noediting"],\n        encoding="utf-8",\n        echo=False,\n        dimensions=(TERM_LINES, TERM_COLUMNS),\n        env={\n            **os.environ,\n            "TERM": "xterm-256color",\n            "TERM_PROGRAM": "telegram-terminal",\n            "TERM_PROGRAM_VERSION": VERSION,\n            "COLORTERM": "truecolor",\n            "PS1": "",\n            "PS2": "",\n            "PROMPT_COMMAND": "",\n        }\n    )\n    child.delaybeforesend = 0\n    return child\n\n\nshell = spawn_shell()\nterminal_screen = pyte.HistoryScreen(TERM_COLUMNS, TERM_LINES, history=TERM_SCROLLBACK)\nterminal_stream = pyte.Stream(terminal_screen)\n\ncurrent_msg = None\ncurrent_event = None\n\noutput_buffer = ""\ncommand_output_buffer = ""\ncommand_file_output_buffer = ""\noutput_revision = 0\n\neditor_state = None\n\ncommand_history = []\nlast_command = None\nlog_enabled = False\ncurrent_log_path = None\ncurrent_output_mode = "chat"\ncurrent_output_no_session = False\ncurrent_shot_clear_after = False\ncurrent_shot_save_path = None\ncurrent_shot_wide = False\ncurrent_shot_command = None\ncurrent_command_started_at = None\ncurrent_command_last_activity = None\npending_shell_data = ""\nshot_theme = "black"\nshot_title = "telegram-terminal"\nshell_cwd = Path.cwd()\nterminal_waiting_prompt = False\nterminal_external_prompt = False\nstarted_at = time.time()\ntruetype_available = True\ntruetype_warning_shown = False\n\nSHELL_WATCHDOG_IDLE_TIMEOUT = 1800\nSHELL_WATCHDOG_POLL_INTERVAL = 10\n\nSHOT_THEMES = {\n    "black": {\n        "bg": (0, 0, 0),\n        "bar": (24, 30, 39),\n        "line": (42, 52, 65),\n        "title": (226, 232, 240),\n        "text": (235, 235, 235),\n        "cursor": (235, 235, 235),\n        "cursor_text": (0, 0, 0),\n    },\n    "green": {\n        "bg": (0, 0, 0),\n        "bar": (0, 0, 0),\n        "line": (28, 48, 34),\n        "title": (226, 232, 240),\n        "text": (220, 255, 226),\n        "cursor": (220, 255, 226),\n        "cursor_text": (0, 0, 0),\n    },\n    "white": {\n        "bg": (0, 0, 0),\n        "bar": (0, 0, 0),\n        "line": (42, 42, 42),\n        "title": (238, 242, 247),\n        "text": (235, 239, 245),\n        "cursor": (235, 239, 245),\n        "cursor_text": (0, 0, 0),\n    },\n    "amber": {\n        "bg": (0, 0, 0),\n        "bar": (0, 0, 0),\n        "line": (82, 58, 22),\n        "title": (255, 236, 179),\n        "text": (255, 213, 128),\n        "cursor": (255, 213, 128),\n        "cursor_text": (0, 0, 0),\n    },\n}\n\nansi_escape = re.compile(\n    r\'\\x1B(?:\\][^\\x07]*(?:\\x07|\\x1B\\\\)|\\[[0-?]*[ -/]*[@-~]|[@-Z\\\\-_])\'\n)\n\n\ndef clean_output(text):\n    return ansi_escape.sub(\'\', text)\n\n\ndef render_terminal_text(text):\n    lines = [[]]\n    col = 0\n\n    for char in text:\n        if char == "\\r":\n            lines[-1] = []\n            col = 0\n        elif char == "\\n":\n            lines.append([])\n            col = 0\n        elif char == "\\b":\n            col = max(0, col - 1)\n        elif char == "\\t":\n            spaces = 8 - (col % 8)\n\n            for _ in range(spaces):\n                if col == len(lines[-1]):\n                    lines[-1].append(" ")\n                else:\n                    lines[-1][col] = " "\n\n                col += 1\n        elif char >= " ":\n            line = lines[-1]\n\n            if col > len(line):\n                line.extend(" " for _ in range(col - len(line)))\n\n            if col == len(line):\n                line.append(char)\n            else:\n                line[col] = char\n\n            col += 1\n\n    return "\\n".join("".join(line).rstrip() for line in lines).rstrip()\n\n\ndef command_message_preview():\n    return command_output_buffer[-MAX_MESSAGE_OUTPUT:] if command_output_buffer else ""\n\ndef tg_code(text):\n    safe = str(text).replace("```", "`\\u200b``")\n    return f"```{safe}```"\n\n\ndef build_help():\n    return """telegram-terminal help\n\nShell\n  $<command>                 run command in persistent bash\n  $ttinput <text>            send one input line\n  $ttpaste <text>            paste raw text without Enter\n\nTerminal Keys\n  $ctrlc / $ctrl c           send Ctrl+C\n  $ctrlb / $ctrl b           send Ctrl+B, useful for tmux prefix\n  $ctrla / $ctrl a           send Ctrl+A\n  $ctrld                     send Ctrl+D\n  $ctrlz                     send Ctrl+Z\n  $enter                     send Enter\n  $tab                       send Tab\n  $up / $down / $left / $right\n  $key esc|backspace|delete|home|end|pgup|pgdn|space\n  $key f1..f12               send function keys\n\nScreenshots\n  $shot                      screenshot current terminal screen\n  $shot 80                   screenshot last 80 text-buffer lines\n  $shot wide                 wider terminal screenshot\n  $shot clear                screenshot, then clear screen/buffer\n  $shot live N               readable animated screenshot, 1-10 seconds\n  $shot live wide N          wider animated screenshot, 1-10 seconds\n  $shot run <cmd>            run command and send screenshot\n  $shot run wide <cmd>       run command with wider screenshot\n  $shot run clear <cmd>      run, screenshot, then clear\n  $shot run --no-session <cmd>\n  $shot theme [black|green|white|amber]\n  $shot title <text>\n  $tt size [COLSxROWS]       show or resize the pty/screenshot terminal\n\nBuffers\n  $buf tail [lines|full]     show session output buffer\n  $buf send [file.txt]       send session buffer as .txt\n  $buf save <file.txt>       save session buffer on server\n  $tt save-session [file]    save session buffer on server\n  $buf clear                 clear session buffer and shot screen\n  $buf status                show buffer status\n\nFiles\n  $ttget <file>              send file from server\n  $ttput <path>              upload attached document to path\n\nEditor\n  $ttedit open <file>        open file\n  $ttedit show               show editor buffer\n  $ttedit set N <text>       replace line N\n  $ttedit insert N <text>    insert before line N\n  $ttedit append <text>      append line\n  $ttedit delete N[-M]       delete line/range\n  $ttedit undo               undo last edit\n  $ttedit find <text>        find text\n  $ttedit replace old new    replace first match\n  $ttedit replace-all old new\n  $ttedit save               save file\n  $ttedit cancel             close editor\n\nHistory / Logs\n  $cmd history [N]           show command history\n  $cmd last                  show last command\n  $cmd rerun N               rerun command by history number\n  $out log on|off|status     save command outputs to logs/\n\nBot\n  $tt status                 shell/editor status\n  $tt restart                restart persistent bash\n  $tt reset                  clear bot runtime state\n  $tt version                show version\n  $tt ping                   check latency\n  $tt uptime                 show bot and system uptime\n  $tt uptime bot             show bot uptime\n  $tt uptime system          show system uptime\n  $tt about                  show summary"""\n\n\nHELP_TEXT = build_help()\n\n\ndef editor_preview(max_chars=3300):\n    if not editor_state:\n        return "No file is open. Use $ttedit open <file> first."\n\n    lines = editor_state["lines"]\n    path = editor_state["path"]\n    dirty = "modified" if editor_state["dirty"] else "saved"\n    header = f"Editing: {path} ({len(lines)} lines, {dirty})\\n"\n    header += "Commands: $ttedit show | $ttedit set N text | $ttedit insert N text | $ttedit delete N[-M] | $ttedit save | $ttedit cancel\\n\\n"\n    body = "\\n".join(f"{idx:4}: {line}" for idx, line in enumerate(lines, start=1))\n    preview = header + body\n\n    if len(preview) > max_chars:\n        preview = preview[:max_chars] + "\\n... (preview truncated; file is still loaded)"\n\n    return preview\n\n\ndef parse_line_range(value, total_lines):\n    value = value.strip()\n\n    if not value:\n        raise ValueError("missing line number")\n\n    if "-" in value:\n        start_text, end_text = value.split("-", 1)\n        start = int(start_text)\n        end = int(end_text)\n    else:\n        start = end = int(value)\n\n    if start < 1 or end < start or end > total_lines:\n        raise ValueError(f"line range must be between 1 and {total_lines}")\n\n    return start, end\n\n\ndef split_command_args(command):\n    try:\n        return shlex.split(command)\n    except ValueError:\n        return command.split()\n\n\n\ndef tail_output(arg=""):\n    if not output_buffer:\n        return "Output buffer is empty."\n\n    arg = arg.strip().lower()\n\n    if arg == "full":\n        return output_buffer\n\n    if arg:\n        try:\n            line_count = max(1, int(arg))\n        except ValueError:\n            line_count = 80\n    else:\n        line_count = 80\n\n    return "\\n".join(output_buffer.splitlines()[-line_count:])\n\n\n\ndef history_preview(limit=30):\n    if not command_history:\n        return "History is empty."\n\n    items = command_history[-limit:]\n    offset = len(command_history) - len(items)\n    return "\\n".join(f"{offset + idx + 1}: {cmd}" for idx, cmd in enumerate(items))\n\n\ndef create_log_path(command):\n    logs_dir = Path("logs")\n    logs_dir.mkdir(parents=True, exist_ok=True)\n    safe_name = re.sub(r"[^a-zA-Z0-9_.-]+", "_", command.strip())[:60].strip("_")\n\n    if not safe_name:\n        safe_name = "command"\n\n    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")\n    return logs_dir / f"{stamp}-{safe_name}.txt"\n\n\ndef write_command_log(command, content, path):\n    if not path:\n        return\n\n    header = f"Command: {command}\\nTime: {datetime.now().isoformat(timespec=\'seconds\')}\\n\\n"\n    path.write_text(header + content, encoding="utf-8", errors="replace")\n\n\ndef reset_runtime_state():\n    global current_msg\n    global current_event\n    global command_output_buffer\n    global command_file_output_buffer\n    global output_revision\n    global current_log_path\n    global current_output_mode\n    global current_output_no_session\n    global current_shot_clear_after\n    global current_shot_save_path\n    global current_shot_wide\n    global current_shot_command\n    global current_command_started_at\n    global current_command_last_activity\n    global pending_shell_data\n    global terminal_waiting_prompt\n    global terminal_external_prompt\n\n    current_msg = None\n    current_event = None\n    command_output_buffer = ""\n    command_file_output_buffer = ""\n    current_log_path = None\n    current_output_mode = "chat"\n    current_output_no_session = False\n    current_shot_clear_after = False\n    current_shot_save_path = None\n    current_shot_wide = False\n    current_shot_command = None\n    current_command_started_at = None\n    current_command_last_activity = None\n    pending_shell_data = ""\n    terminal_waiting_prompt = False\n    terminal_external_prompt = False\n    output_revision += 1\n\n\ndef reply_target_id(event):\n    message = getattr(event, "message", event)\n    return getattr(message, "id", None)\n\n\nasync def reply_file(event, file_path, message=None, force_document=False):\n    chat_id = getattr(event, "chat_id", None)\n\n    if chat_id is None and hasattr(event, "get_chat"):\n        chat = await event.get_chat()\n        chat_id = getattr(chat, "id", chat)\n\n    await event.client.send_file(\n        chat_id,\n        str(file_path),\n        caption=message,\n        reply_to=reply_target_id(event),\n        force_document=force_document,\n    )\n\n\nasync def send_text_file(event, content, filename="telegram-terminal-output.txt", message="Output attached as text file."):\n    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt", delete=False) as tmp:\n        tmp.write(content)\n        tmp_path = Path(tmp.name)\n\n    final_path = tmp_path.with_name(filename)\n    tmp_path.replace(final_path)\n\n    try:\n        await reply_file(event, final_path, message)\n    finally:\n        try:\n            final_path.unlink()\n        except OSError:\n            pass\n\n\n\nFONT_5X7 = {\n    " ": [0, 0, 0, 0, 0, 0, 0],\n    "!": [4, 4, 4, 4, 4, 0, 4],\n    "\\"": [10, 10, 10, 0, 0, 0, 0],\n    "#": [10, 10, 31, 10, 31, 10, 10],\n    "$": [4, 15, 20, 14, 5, 30, 4],\n    "%": [24, 25, 2, 4, 8, 19, 3],\n    "&": [12, 18, 20, 8, 21, 18, 13],\n    "\'": [4, 4, 8, 0, 0, 0, 0],\n    "(": [2, 4, 8, 8, 8, 4, 2],\n    ")": [8, 4, 2, 2, 2, 4, 8],\n    "*": [0, 4, 21, 14, 21, 4, 0],\n    "+": [0, 4, 4, 31, 4, 4, 0],\n    ",": [0, 0, 0, 0, 4, 4, 8],\n    "-": [0, 0, 0, 31, 0, 0, 0],\n    ".": [0, 0, 0, 0, 0, 12, 12],\n    "/": [1, 2, 4, 8, 16, 0, 0],\n    "0": [14, 17, 19, 21, 25, 17, 14],\n    "1": [4, 12, 4, 4, 4, 4, 14],\n    "2": [14, 17, 1, 2, 4, 8, 31],\n    "3": [30, 1, 1, 14, 1, 1, 30],\n    "4": [2, 6, 10, 18, 31, 2, 2],\n    "5": [31, 16, 16, 30, 1, 1, 30],\n    "6": [14, 16, 16, 30, 17, 17, 14],\n    "7": [31, 1, 2, 4, 8, 8, 8],\n    "8": [14, 17, 17, 14, 17, 17, 14],\n    "9": [14, 17, 17, 15, 1, 1, 14],\n    ":": [0, 12, 12, 0, 12, 12, 0],\n    ";": [0, 12, 12, 0, 4, 4, 8],\n    "<": [2, 4, 8, 16, 8, 4, 2],\n    "=": [0, 0, 31, 0, 31, 0, 0],\n    ">": [8, 4, 2, 1, 2, 4, 8],\n    "?": [14, 17, 1, 2, 4, 0, 4],\n    "@": [14, 17, 1, 13, 21, 21, 14],\n    "A": [14, 17, 17, 31, 17, 17, 17],\n    "B": [30, 17, 17, 30, 17, 17, 30],\n    "C": [14, 17, 16, 16, 16, 17, 14],\n    "D": [30, 17, 17, 17, 17, 17, 30],\n    "E": [31, 16, 16, 30, 16, 16, 31],\n    "F": [31, 16, 16, 30, 16, 16, 16],\n    "G": [14, 17, 16, 23, 17, 17, 14],\n    "H": [17, 17, 17, 31, 17, 17, 17],\n    "I": [14, 4, 4, 4, 4, 4, 14],\n    "J": [7, 2, 2, 2, 18, 18, 12],\n    "K": [17, 18, 20, 24, 20, 18, 17],\n    "L": [16, 16, 16, 16, 16, 16, 31],\n    "M": [17, 27, 21, 21, 17, 17, 17],\n    "N": [17, 25, 21, 19, 17, 17, 17],\n    "O": [14, 17, 17, 17, 17, 17, 14],\n    "P": [30, 17, 17, 30, 16, 16, 16],\n    "Q": [14, 17, 17, 17, 21, 18, 13],\n    "R": [30, 17, 17, 30, 20, 18, 17],\n    "S": [15, 16, 16, 14, 1, 1, 30],\n    "T": [31, 4, 4, 4, 4, 4, 4],\n    "U": [17, 17, 17, 17, 17, 17, 14],\n    "V": [17, 17, 17, 17, 17, 10, 4],\n    "W": [17, 17, 17, 21, 21, 21, 10],\n    "X": [17, 17, 10, 4, 10, 17, 17],\n    "Y": [17, 17, 10, 4, 4, 4, 4],\n    "Z": [31, 1, 2, 4, 8, 16, 31],\n    "[": [14, 8, 8, 8, 8, 8, 14],\n    "\\\\": [16, 8, 4, 2, 1, 0, 0],\n    "]": [14, 2, 2, 2, 2, 2, 14],\n    "^": [4, 10, 17, 0, 0, 0, 0],\n    "_": [0, 0, 0, 0, 0, 0, 31],\n    "`": [8, 4, 2, 0, 0, 0, 0],\n    "{": [2, 4, 4, 8, 4, 4, 2],\n    "|": [4, 4, 4, 0, 4, 4, 4],\n    "}": [8, 4, 4, 2, 4, 4, 8],\n    "~": [0, 0, 8, 21, 2, 0, 0],\n}\n\nfor char in "abcdefghijklmnopqrstuvwxyz":\n    FONT_5X7[char] = FONT_5X7[char.upper()]\n\n\ndef png_chunk(kind, data):\n    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)\n\n\ndef write_png(path, width, height, pixels):\n    raw = bytearray()\n\n    for y in range(height):\n        raw.append(0)\n        start = y * width * 3\n        raw.extend(pixels[start:start + width * 3])\n\n    data = b"\\x89PNG\\r\\n\\x1a\\n"\n    data += png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))\n    data += png_chunk(b"IDAT", zlib.compress(bytes(raw), 9))\n    data += png_chunk(b"IEND", b"")\n    path.write_bytes(data)\n\n\ndef draw_rect(pixels, width, height, x1, y1, x2, y2, color):\n    x1 = max(0, min(width, x1))\n    x2 = max(0, min(width, x2))\n    y1 = max(0, min(height, y1))\n    y2 = max(0, min(height, y2))\n\n    for y in range(y1, y2):\n        row = y * width * 3\n        for x in range(x1, x2):\n            idx = row + x * 3\n            pixels[idx:idx + 3] = bytes(color)\n\n\ndef draw_circle(pixels, width, height, cx, cy, radius, color):\n    rr = radius * radius\n\n    for y in range(cy - radius, cy + radius + 1):\n        if y < 0 or y >= height:\n            continue\n\n        for x in range(cx - radius, cx + radius + 1):\n            if x < 0 or x >= width:\n                continue\n\n            if (x - cx) ** 2 + (y - cy) ** 2 <= rr:\n                idx = (y * width + x) * 3\n                pixels[idx:idx + 3] = bytes(color)\n\n\ndef draw_text(pixels, width, height, x, y, text, color, scale=2, line_gap=2):\n    cursor_x = x\n    cursor_y = y\n    char_width = 6 * scale\n    line_height = 7 * scale + line_gap\n\n    for char in text:\n        if char == "\\n":\n            cursor_x = x\n            cursor_y += line_height\n            continue\n\n        if char == "\\t":\n            cursor_x += char_width * 4\n            continue\n\n        glyph = FONT_5X7.get(char, FONT_5X7.get("?"))\n\n        for gy, row in enumerate(glyph):\n            for gx in range(5):\n                if row & (1 << (4 - gx)):\n                    draw_rect(\n                        pixels,\n                        width,\n                        height,\n                        cursor_x + gx * scale,\n                        cursor_y + gy * scale,\n                        cursor_x + (gx + 1) * scale,\n                        cursor_y + (gy + 1) * scale,\n                        color,\n                    )\n\n        cursor_x += char_width\n\n        if cursor_x > width - char_width:\n            cursor_x = x\n            cursor_y += line_height\n\n        if cursor_y > height - line_height:\n            break\n\nTERMINAL_PALETTE = {\n    "black": (0, 0, 0),\n    "red": (205, 49, 49),\n    "green": (13, 188, 121),\n    "brown": (229, 229, 16),\n    "yellow": (229, 229, 16),\n    "blue": (36, 114, 200),\n    "magenta": (188, 63, 188),\n    "cyan": (17, 168, 205),\n    "white": (229, 229, 229),\n    "brightblack": (102, 102, 102),\n    "brightred": (241, 76, 76),\n    "brightgreen": (35, 209, 139),\n    "brightyellow": (245, 245, 67),\n    "brightblue": (59, 142, 234),\n    "brightmagenta": (214, 112, 214),\n    "brightcyan": (41, 184, 219),\n    "brightwhite": (255, 255, 255),\n}\n\nFONT_PATHS = [\n    BASE_DIR / "assets/fonts/DejaVuSansMono.ttf",\n    "assets/fonts/DejaVuSansMono.ttf",\n    "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",\n    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",\n    "/usr/share/fonts/truetype/liberation2/LiberationMono-Regular.ttf",\n]\n\nTERMUX_PILLOW_FREETYPE_HELP = (\n    "TrueType fonts unavailable; screenshots will use Pillow\'s default font.\\n"\n    "If you are running this in Termux, install FreeType support and reinstall Pillow:\\n"\n    "  pkg install freetype libjpeg-turbo zlib python\\n"\n    "  pip uninstall -y pillow\\n"\n    "  pip install --no-cache-dir --force-reinstall pillow\\n"\n    "If pip still builds Pillow without _imagingft, use Termux\'s package instead:\\n"\n    "  pip uninstall -y pillow\\n"\n    "  pkg install python-pillow"\n)\n\n\ndef xterm_color(index):\n    index = max(0, min(255, int(index)))\n\n    if index < 16:\n        palette = [\n            (0, 0, 0), (205, 49, 49), (13, 188, 121), (229, 229, 16),\n            (36, 114, 200), (188, 63, 188), (17, 168, 205), (229, 229, 229),\n            (102, 102, 102), (241, 76, 76), (35, 209, 139), (245, 245, 67),\n            (59, 142, 234), (214, 112, 214), (41, 184, 219), (255, 255, 255),\n        ]\n        return palette[index]\n\n    if 16 <= index <= 231:\n        index -= 16\n        r = index // 36\n        g = (index % 36) // 6\n        b = index % 6\n        steps = [0, 95, 135, 175, 215, 255]\n        return (steps[r], steps[g], steps[b])\n\n    shade = 8 + (index - 232) * 10\n    return (shade, shade, shade)\n\n\ndef resolve_terminal_color(value, default_color):\n    if value is None:\n        return default_color\n\n    if isinstance(value, int):\n        return xterm_color(value)\n\n    name = str(value).lower().strip().replace("-", "")\n\n    if name in {"default", ""}:\n        return default_color\n\n    if name.startswith("#"):\n        name = name[1:]\n\n    if len(name) == 6 and all(char in "0123456789abcdef" for char in name):\n        return tuple(int(name[i:i + 2], 16) for i in (0, 2, 4))\n\n    if name.startswith("ansi"):\n        name = name[4:]\n\n    return TERMINAL_PALETTE.get(name) or default_color\n\n\ndef brighten(color):\n    return tuple(min(255, int(channel * 1.25) + 18) for channel in color)\n\n\ndef load_terminal_font(size):\n    global truetype_available\n    global truetype_warning_shown\n\n    if truetype_available:\n        for font_path in FONT_PATHS:\n            if not Path(font_path).is_file():\n                continue\n\n            try:\n                return ImageFont.truetype(str(font_path), size=size)\n            except ImportError as e:\n                truetype_available = False\n\n                if not truetype_warning_shown:\n                    print(f"{TERMUX_PILLOW_FREETYPE_HELP}\\nOriginal error: {e}")\n                    truetype_warning_shown = True\n\n                break\n            except Exception as e:\n                if not truetype_warning_shown:\n                    print(f"Font load failed ({font_path}); using Pillow default font: {e}")\n                    truetype_warning_shown = True\n\n    return ImageFont.load_default()\n\n\ndef font_bbox(font, text):\n    if hasattr(font, "getbbox"):\n        return font.getbbox(text)\n\n    if hasattr(font, "getsize"):\n        width, height = font.getsize(text)\n        return (0, 0, width, height)\n\n    return (0, 0, 10, 18)\n\n\ndef terminal_cell(screen, row, col):\n    line = screen.buffer.get(row, {})\n    return line.get(col)\n\n\ndef screen_rows(screen):\n    rows = []\n    history = getattr(screen, "history", None)\n\n    if history is not None:\n        rows.extend(list(history.top))\n\n    rows.extend(screen.buffer.get(row, {}) for row in range(screen.lines))\n    return rows\n\n\ndef row_has_text(row):\n    return any(getattr(cell, "data", " ") != " " for cell in row.values())\n\n\ndef terminal_has_text(screen=None):\n    screen = screen or terminal_screen\n    return any(row_has_text(row) for row in screen_rows(screen))\n\n\ndef terminal_snapshot_lines():\n    lines = []\n\n    for row in screen_rows(terminal_screen):\n        chars = []\n        for col in range(terminal_screen.columns):\n            cell = row.get(col)\n            chars.append(getattr(cell, "data", " ") if cell else " ")\n        lines.append("".join(chars).rstrip())\n\n    return lines\n\n\ndef feed_terminal_screen(data):\n    if not data:\n        return\n\n    try:\n        terminal_stream.feed(data)\n    except Exception as e:\n        print(f"Terminal emulator feed error: {e}")\n\n\ndef reset_terminal_screen():\n    global terminal_screen\n    global terminal_stream\n    global terminal_waiting_prompt\n    global terminal_external_prompt\n\n    terminal_screen = pyte.HistoryScreen(TERM_COLUMNS, TERM_LINES, history=TERM_SCROLLBACK)\n    terminal_stream = pyte.Stream(terminal_screen)\n    terminal_waiting_prompt = False\n    terminal_external_prompt = False\n\n\ndef resize_terminal(cols, lines):\n    global TERM_COLUMNS\n    global TERM_LINES\n    global terminal_screen\n    global terminal_stream\n\n    cols = max(40, min(240, int(cols)))\n    lines = max(12, min(80, int(lines)))\n    TERM_COLUMNS = cols\n    TERM_LINES = lines\n\n    try:\n        shell.setwinsize(lines, cols)\n    except Exception:\n        pass\n\n    try:\n        terminal_screen.resize(lines, cols)\n    except Exception:\n        terminal_screen = pyte.HistoryScreen(cols, lines, history=TERM_SCROLLBACK)\n        terminal_stream = pyte.Stream(terminal_screen)\n\n    return cols, lines\n\n\ndef parse_terminal_size(value):\n    match = re.fullmatch(r"\\s*(\\d{2,3})\\s*[x, ]\\s*(\\d{2,3})\\s*", value)\n\n    if not match:\n        raise ValueError("usage: $tt size COLSxROWS, example: $tt size 120x36")\n\n    return int(match.group(1)), int(match.group(2))\n\n\ndef short_cwd(path):\n    home = Path.home()\n\n    if path == home:\n        return "~"\n\n    try:\n        return "~/" + str(path.relative_to(home))\n    except ValueError:\n        return str(path)\n\n\ndef update_shell_cwd(command):\n    global shell_cwd\n\n    try:\n        parts = shlex.split(command)\n    except ValueError:\n        return\n\n    if not parts or parts[0] != "cd":\n        return\n\n    target = Path.home() if len(parts) == 1 else Path(parts[1]).expanduser()\n\n    if not target.is_absolute():\n        target = shell_cwd / target\n\n    shell_cwd = target.resolve(strict=False)\n\n\ndef feed_terminal_prompt(command="", newline=True, replace_current=False):\n    user = os.environ.get("USER") or "user"\n    host = socket.gethostname().split(".")[0]\n    cwd = short_cwd(shell_cwd)\n\n    if replace_current and terminal_has_text():\n        prefix = "\\r\\x1b[2K"\n    else:\n        prefix = "\\r\\n" if terminal_has_text() and getattr(terminal_screen.cursor, "x", 0) else ""\n\n    suffix = "\\r\\n" if newline else ""\n    command_text = f" {command}" if command else ""\n    prompt = f"{prefix}\\x1b[1;32m{user}@{host}\\x1b[0m:\\x1b[1;34m{cwd}\\x1b[0m${command_text}{suffix}"\n    feed_terminal_screen(prompt)\n\n\ndef fallback_text_to_screen(content):\n    screen = pyte.HistoryScreen(TERM_COLUMNS, TERM_LINES, history=TERM_SCROLLBACK)\n    stream = pyte.Stream(screen)\n    stream.feed(clean_output(content).replace("\\r", ""))\n    return screen\n\n\n\ndef render_terminal_image(content, wide=False, use_terminal=True, command_line=None):\n    theme = SHOT_THEMES.get(shot_theme, SHOT_THEMES["black"])\n    screen = terminal_screen\n\n    if not use_terminal or not terminal_has_text(screen):\n        screen = fallback_text_to_screen(content or "Output buffer is empty.")\n\n    cols = screen.columns\n    all_rows = screen_rows(screen)\n    max_rows = SHOT_RENDER_ROWS if wide else min(SHOT_RENDER_ROWS, 64)\n    start_row = max(0, len(all_rows) - max_rows)\n    rendered_rows = all_rows[start_row:]\n    command_line = (command_line or "").strip()\n    rendered_lines = [\n        "".join(getattr(row.get(col), "data", " ") if row.get(col) else " " for col in range(cols)).rstrip()\n        for row in rendered_rows\n    ]\n    command_is_visible = any(line.endswith(f"$ {command_line}") for line in rendered_lines)\n    show_command_header = bool(command_line and not command_is_visible)\n    rows = (len(rendered_rows) or screen.lines) + (1 if show_command_header else 0)\n    font_size = 16 if wide else 17\n    font = load_terminal_font(font_size)\n    title_font = load_terminal_font(16)\n    bbox = font_bbox(font, "M")\n    cell_width = max(9, bbox[2] - bbox[0] + 1)\n    cell_height = max(18, bbox[3] - bbox[1] + 7)\n    pad_x = 22 if wide else 26\n    pad_top = 64\n    pad_bottom = 22\n    title_height = 46\n    width = pad_x * 2 + cols * cell_width\n    height = pad_top + rows * cell_height + pad_bottom\n\n    image = Image.new("RGB", (width, height), theme["bg"])\n    draw = ImageDraw.Draw(image)\n    draw.rectangle((0, 0, width, title_height), fill=theme["bar"])\n    draw.rectangle((0, title_height, width, title_height + 1), fill=theme["line"])\n    draw.ellipse((18, 15, 31, 28), fill=(255, 95, 87))\n    draw.ellipse((42, 15, 55, 28), fill=(255, 189, 46))\n    draw.ellipse((66, 15, 79, 28), fill=(40, 200, 64))\n    draw.text((100, 13), shot_title[:100], fill=theme["title"], font=title_font)\n\n    history_len = len(list(getattr(getattr(screen, "history", None), "top", [])))\n    cursor_row = history_len + getattr(screen.cursor, "y", -1)\n    cursor_col = getattr(screen.cursor, "x", -1)\n    visible_cursor_row = cursor_row - start_row + (1 if show_command_header else 0)\n    cursor_visible = 0 <= visible_cursor_row < rows and 0 <= cursor_col < cols\n\n    row_offset = 0\n\n    if show_command_header:\n        user = os.environ.get("USER") or "user"\n        host = socket.gethostname().split(".")[0]\n        prompt_text = f"{user}@{host}:{short_cwd(shell_cwd)}$ "\n        draw.text((pad_x, pad_top), prompt_text[:cols], fill=resolve_terminal_color("brightgreen", theme["text"]), font=font)\n        prompt_width = min(len(prompt_text), cols) * cell_width\n        draw.text((pad_x + prompt_width, pad_top), command_line[:max(0, cols - len(prompt_text))], fill=theme["text"], font=font)\n        row_offset = 1\n\n    for row_index, row_data in enumerate(rendered_rows):\n        y = pad_top + (row_index + row_offset) * cell_height\n        for col in range(cols):\n            cell = row_data.get(col)\n            char = getattr(cell, "data", " ") if cell else " "\n\n            if not char or char == "\\x00":\n                char = " "\n\n            fg = resolve_terminal_color(getattr(cell, "fg", None), theme["text"])\n            bg = resolve_terminal_color(getattr(cell, "bg", None), theme["bg"])\n            is_cursor = cursor_visible and (row_index + row_offset) == visible_cursor_row and col == cursor_col\n\n            if cell and getattr(cell, "reverse", False):\n                fg, bg = bg, fg\n\n            if cell and getattr(cell, "bold", False):\n                fg = brighten(fg)\n\n            if cell and getattr(cell, "dim", False):\n                fg = tuple(max(0, int(channel * 0.55)) for channel in fg)\n\n            if is_cursor:\n                bg = theme.get("cursor", theme["text"])\n                fg = theme.get("cursor_text", theme["bg"])\n\n            x = pad_x + col * cell_width\n\n            if bg != theme["bg"] or is_cursor:\n                draw.rectangle((x, y, x + cell_width, y + cell_height), fill=bg)\n\n            if char != " ":\n                draw.text((x, y), char, fill=fg, font=font)\n\n            if cell and getattr(cell, "underscore", False):\n                draw.line((x, y + cell_height - 3, x + cell_width, y + cell_height - 3), fill=fg)\n\n            if cell and getattr(cell, "strikethrough", False):\n                draw.line((x, y + cell_height // 2, x + cell_width, y + cell_height // 2), fill=fg)\n\n    return image\n\n\nasync def send_terminal_screenshot(event, content, wide=False, save_path=None, use_terminal=True, command_line=None):\n    try:\n        image = render_terminal_image(content, wide=wide, use_terminal=use_terminal, command_line=command_line)\n\n        if save_path:\n            image_path = Path(save_path).expanduser()\n            image_path.parent.mkdir(parents=True, exist_ok=True)\n            image.save(image_path, "PNG")\n            await reply_file(event, image_path, f"Terminal screenshot saved: {image_path}")\n            return\n\n        with tempfile.TemporaryDirectory() as tmp_dir:\n            image_path = Path(tmp_dir) / "telegram-terminal.png"\n            image.save(image_path, "PNG")\n            await reply_file(event, image_path, "Terminal screenshot:")\n\n    except Exception as e:\n        await event.reply(tg_code(f"Screenshot Error:\\n{type(e).__name__}: {e}"))\n\n\ndef gif_terminal_frame(image):\n    palette_container = getattr(Image, "Palette", None)\n    palette_mode = getattr(palette_container, "ADAPTIVE", None) if palette_container else None\n    dither_container = getattr(Image, "Dither", None)\n    dither_mode = getattr(dither_container, "NONE", None) if dither_container else None\n\n    if palette_mode is None:\n        palette_mode = Image.ADAPTIVE\n\n    if dither_mode is None:\n        dither_mode = Image.NONE\n\n    frame = image.convert("P", palette=palette_mode, colors=256, dither=dither_mode)\n    frame.info.pop("transparency", None)\n    return frame\n\n\ndef save_terminal_live_gif(path, frames, seconds):\n    step = 1\n\n    while True:\n        selected = frames[::step]\n\n        if selected[-1] is not frames[-1]:\n            selected.append(frames[-1])\n\n        frame_duration = max(20, int(seconds * 1000 / len(selected)))\n        gif_frames = [frame if frame.mode == "P" else gif_terminal_frame(frame) for frame in selected]\n        gif_frames[0].save(\n            path,\n            "GIF",\n            save_all=True,\n            append_images=gif_frames[1:],\n            duration=frame_duration,\n            loop=0,\n            optimize=False,\n            disposal=1,\n            transparency=None,\n        )\n\n        if path.stat().st_size <= SHOT_LIVE_MAX_BYTES or len(selected) <= 2:\n            return len(selected), frame_duration\n\n        step *= 2\n\n\nasync def send_terminal_live_shot(event, content, seconds=SHOT_LIVE_SECONDS, wide=False, use_terminal=True, command_line=None):\n    try:\n        seconds = max(1, min(SHOT_LIVE_MAX_SECONDS, int(seconds)))\n        frame_count = max(2, int(seconds / SHOT_LIVE_INTERVAL) + 1)\n        frames = []\n\n        for frame_index in range(frame_count):\n            frame = render_terminal_image(content, wide=wide, use_terminal=use_terminal, command_line=command_line)\n            frames.append(gif_terminal_frame(frame))\n\n            if frame_index < frame_count - 1:\n                await asyncio.sleep(SHOT_LIVE_INTERVAL)\n\n        with tempfile.TemporaryDirectory() as tmp_dir:\n            image_path = Path(tmp_dir) / "telegram-terminal-live.gif"\n            frame_count, frame_duration = save_terminal_live_gif(image_path, frames, seconds)\n            caption = f"Terminal live shot ({seconds}s, {frame_count} frames):"\n            await reply_file(event, image_path, caption, force_document=True)\n\n    except Exception as e:\n        await event.reply(tg_code(f"Live Shot Error:\\n{type(e).__name__}: {e}"))\n\n\nasync def handle_editor_command(event, command):\n    global editor_state\n\n    if not command.startswith("ttedit"):\n        return False\n\n    rest = command[6:].strip()\n    editor_actions = {\n        "show", "ls", "view", "set", "replace", "insert", "ins", "append", "add",\n        "delete", "del", "rm", "undo", "find", "replace-all", "replaceall", "save",\n        "cancel", "close", "quit",\n    }\n\n    action_name = rest.split(maxsplit=1)[0].lower() if rest else ""\n\n    if rest and (action_name not in editor_actions or action_name == "open"):\n        if action_name == "open":\n            _, _, path_text = rest.partition(" ")\n        else:\n            path_text = rest\n\n        if not path_text:\n            await event.reply(tg_code("Usage: $ttedit open <file>"))\n            return True\n\n        path = Path(path_text).expanduser()\n\n        try:\n            if path.exists():\n                content = path.read_text(encoding="utf-8", errors="replace")\n                lines = content.splitlines()\n            else:\n                lines = []\n\n            editor_state = {\n                "path": path,\n                "lines": lines,\n                "dirty": False,\n                "undo": [],\n            }\n\n            await event.reply(tg_code(editor_preview()))\n\n        except Exception as e:\n            await event.reply(tg_code(f"Editor open error:\\n{e}"))\n\n        return True\n\n    if not editor_state:\n        await event.reply(tg_code("No file is open. Use $ttedit open <file> first."))\n        return True\n\n    action_text = rest\n\n    if not action_text:\n        await event.reply(tg_code(editor_preview()))\n        return True\n\n    action, _, rest = action_text.partition(" ")\n    action = action.lower()\n\n    try:\n        lines = editor_state["lines"]\n\n        def snapshot():\n            editor_state["undo"].append(lines.copy())\n            editor_state["undo"] = editor_state["undo"][-20:]\n\n        if action in ("show", "ls", "view"):\n            await event.reply(tg_code(editor_preview()))\n\n        elif action == "set":\n            line_text, _, new_text = rest.partition(" ")\n            line_no = int(line_text)\n\n            if line_no < 1 or line_no > len(lines):\n                raise ValueError(f"line must be between 1 and {len(lines)}")\n\n            snapshot()\n            lines[line_no - 1] = new_text\n            editor_state["dirty"] = True\n            await event.reply(tg_code(f"Line {line_no} updated.\\n\\n{editor_preview()}"))\n\n        elif action in ("insert", "ins"):\n            line_text, _, new_text = rest.partition(" ")\n            line_no = int(line_text)\n\n            if line_no < 1 or line_no > len(lines) + 1:\n                raise ValueError(f"line must be between 1 and {len(lines) + 1}")\n\n            snapshot()\n            lines.insert(line_no - 1, new_text)\n            editor_state["dirty"] = True\n            await event.reply(tg_code(f"Inserted at line {line_no}.\\n\\n{editor_preview()}"))\n\n        elif action in ("append", "add"):\n            snapshot()\n            lines.append(rest)\n            editor_state["dirty"] = True\n            await event.reply(tg_code(f"Appended at line {len(lines)}.\\n\\n{editor_preview()}"))\n\n        elif action in ("delete", "del", "rm"):\n            if not lines:\n                raise ValueError("file is empty")\n\n            start, end = parse_line_range(rest, len(lines))\n            snapshot()\n            del lines[start - 1:end]\n            editor_state["dirty"] = True\n            await event.reply(tg_code(f"Deleted line(s) {start}-{end}.\\n\\n{editor_preview()}"))\n\n        elif action == "undo":\n            if not editor_state["undo"]:\n                raise ValueError("nothing to undo")\n\n            editor_state["lines"] = editor_state["undo"].pop()\n            editor_state["dirty"] = True\n            await event.reply(tg_code(f"Undo applied.\\n\\n{editor_preview()}"))\n\n        elif action == "find":\n            needle = rest\n\n            if not needle:\n                raise ValueError("usage: $ttedit find <text>")\n\n            matches = [f"{idx}: {line}" for idx, line in enumerate(lines, start=1) if needle in line]\n            await event.reply(tg_code("\\n".join(matches[:80]) if matches else f"No matches: {needle}"))\n\n        elif action in ("replace", "replace-all", "replaceall"):\n            old_text, _, new_text = rest.partition(" ")\n\n            if not old_text:\n                raise ValueError("usage: $ttedit replace <old> <new>")\n\n            count = 0\n            snapshot()\n\n            for idx, line in enumerate(lines):\n                if old_text in line:\n                    count += line.count(old_text)\n                    lines[idx] = line.replace(old_text, new_text)\n\n                    if action == "replace":\n                        break\n\n            if count == 0:\n                editor_state["undo"].pop()\n                await event.reply(tg_code(f"No matches: {old_text}"))\n            else:\n                editor_state["dirty"] = True\n                await event.reply(tg_code(f"Replaced {count} occurrence(s).\\n\\n{editor_preview()}"))\n\n        elif action == "save":\n            path = editor_state["path"]\n            path.parent.mkdir(parents=True, exist_ok=True)\n            content = "\\n".join(lines) + ("\\n" if lines else "")\n            path.write_text(content, encoding="utf-8")\n            editor_state["dirty"] = False\n            await event.reply(tg_code(f"Saved: {path}"))\n\n        elif action in ("cancel", "close", "quit"):\n            path = editor_state["path"]\n            dirty = editor_state["dirty"]\n            editor_state = None\n            suffix = "Unsaved changes discarded." if dirty else "Editor closed."\n            await event.reply(tg_code(f"{suffix}\\n{path}"))\n\n        else:\n            await event.reply(tg_code(editor_preview()))\n\n    except Exception as e:\n        await event.reply(tg_code(f"Editor error:\\n{e}"))\n\n    return True\n\nasync def send_file(event, command):\n    args = split_command_args(command)\n\n    if len(args) < 2:\n        await event.reply(tg_code("Usage: $ttget <file>"))\n        return True\n\n    path = Path(args[1]).expanduser()\n\n    if not path.is_file():\n        await event.reply(tg_code(f"File not found: {path}"))\n        return True\n\n    await reply_file(event, path, f"File: {path}")\n    return True\n\n\nasync def receive_file(event, command):\n    args = split_command_args(command)\n\n    if len(args) < 2:\n        await event.reply(tg_code("Usage: send a document with caption \'$ttput <path>\'"))\n        return True\n\n    if not event.message.file:\n        await event.reply(tg_code("Attach a document and use caption: $ttput <path>"))\n        return True\n\n    path = Path(args[1]).expanduser()\n    path.parent.mkdir(parents=True, exist_ok=True)\n    await event.message.download_media(file=str(path))\n    await event.reply(tg_code(f"Uploaded: {path}"))\n    return True\n\n\ndef restart_shell():\n    global shell\n    global terminal_screen\n    global terminal_stream\n    global terminal_waiting_prompt\n    global terminal_external_prompt\n    global pending_shell_data\n\n    try:\n        if shell.isalive():\n            shell.terminate(force=True)\n    except Exception:\n        pass\n\n    shell = spawn_shell()\n    terminal_screen = pyte.HistoryScreen(TERM_COLUMNS, TERM_LINES, history=TERM_SCROLLBACK)\n    terminal_stream = pyte.Stream(terminal_screen)\n    terminal_waiting_prompt = False\n    terminal_external_prompt = False\n    pending_shell_data = ""\n\n\nasync def shell_watchdog():\n    global current_command_started_at\n    global current_command_last_activity\n\n    while True:\n        await asyncio.sleep(SHELL_WATCHDOG_POLL_INTERVAL)\n\n        try:\n            if not shell.isalive():\n                print("Watchdog: shell dead; restarting")\n                restart_shell()\n                reset_runtime_state()\n                continue\n\n            if not current_command_started_at or not current_command_last_activity:\n                continue\n\n            if not command_output_buffer:\n                continue\n\n            idle_for = time.time() - current_command_last_activity\n\n            if idle_for < SHELL_WATCHDOG_IDLE_TIMEOUT:\n                continue\n\n            print(f"Watchdog: shell idle for {int(idle_for)}s; restarting")\n\n            if current_event:\n                try:\n                    await current_event.reply(\n                        tg_code(\n                            "Shell watchdog restarted the session after inactivity."\n                        )\n                    )\n                except Exception:\n                    pass\n\n            restart_shell()\n            reset_runtime_state()\n\n        except Exception as e:\n            print(f"Watchdog Error: {e}")\n\n\ndef command_program_names(command):\n    names = []\n\n    for segment in command.split("|"):\n        try:\n            parts = shlex.split(segment)\n        except ValueError:\n            parts = segment.split()\n\n        if parts:\n            names.append(Path(parts[0]).name)\n\n    return names\n\n\ndef is_interactive_shell_command(command):\n    try:\n        parts = shlex.split(command)\n    except ValueError:\n        parts = command.split()\n\n    if not parts:\n        return False\n\n    name = Path(parts[0]).name\n    full_screen_commands = {\n        "tmux", "screen", "vim", "vi", "nvim", "nano", "micro", "emacs",\n        "less", "more", "man", "top", "htop", "btop", "watch", "ssh",\n        "su", "login", "ftp", "sftp", "mysql", "psql", "sqlite3", "python",\n        "python3", "node", "irb", "php", "lua", "radian", "R", "cmatrix",\n        "asciiquarium", "cava", "hollywood",\n    }\n    non_interactive_flags = {"-c", "--command", "--version", "-V", "--help", "-h"}\n\n    if "|" in command and any(program in full_screen_commands for program in command_program_names(command)):\n        return True\n\n    if name == "sudo":\n        if any(arg in {"-i", "-s", "su"} for arg in parts[1:]):\n            return True\n\n        idx = 1\n        options_with_values = {"-u", "--user", "-g", "--group", "-p", "--prompt", "-C", "--close-from", "-h", "--host"}\n\n        while idx < len(parts):\n            arg = parts[idx]\n\n            if arg == "--":\n                idx += 1\n                break\n\n            if arg in options_with_values:\n                idx += 2\n                continue\n\n            if arg.startswith("-"):\n                idx += 1\n                continue\n\n            break\n\n        return idx < len(parts) and is_interactive_shell_command(" ".join(shlex.quote(arg) for arg in parts[idx:]))\n\n    if name == "tmux":\n        detached = {"-d", "detach", "detach-client", "ls", "list-sessions", "kill-session", "kill-server"}\n        return not any(arg in detached for arg in parts[1:])\n\n    if name in {"python", "python3", "node", "php", "lua", "R"}:\n        return not any(arg in non_interactive_flags for arg in parts[1:])\n\n    return name in full_screen_commands\n\n\ndef is_shell_exit_command(command):\n    try:\n        parts = shlex.split(command)\n    except ValueError:\n        parts = command.split()\n\n    return bool(parts) and parts[0] in {"exit", "logout"}\n\n\ndef shell_status():\n    status = "alive" if shell.isalive() else "dead"\n    editor = "none"\n\n    if editor_state:\n        dirty = "modified" if editor_state["dirty"] else "saved"\n        editor = f"{editor_state[\'path\']} ({dirty})"\n\n    return f"Shell: {status}\\nEditor: {editor}\\nBuffer: {len(output_buffer)} chars"\n\n\n\ndef buffer_status():\n    session_lines = len(output_buffer.splitlines()) if output_buffer else 0\n    command_lines = len(command_output_buffer.splitlines()) if command_output_buffer else 0\n    logging = "on" if log_enabled else "off"\n    editor = "none"\n\n    if editor_state:\n        dirty = "modified" if editor_state["dirty"] else "saved"\n        editor = f"{editor_state[\'path\']} ({dirty})"\n\n    log_path = str(current_log_path) if current_log_path else "none"\n    last = last_command or "none"\n\n    return (\n        f"Session buffer: {len(output_buffer)} chars, {session_lines} lines\\n"\n        f"Current command buffer: {len(command_output_buffer)} chars, {command_lines} lines\\n"\n        f"Last command: {last}\\n"\n        f"Logging: {logging}\\n"\n        f"Current log: {log_path}\\n"\n        f"Editor: {editor}"\n    )\n\n\n\ndef format_duration(seconds):\n    seconds = int(seconds)\n    days, seconds = divmod(seconds, 86400)\n    hours, seconds = divmod(seconds, 3600)\n    minutes, seconds = divmod(seconds, 60)\n    parts = []\n\n    if days:\n        parts.append(f"{days}d")\n\n    if hours or parts:\n        parts.append(f"{hours}h")\n\n    if minutes or parts:\n        parts.append(f"{minutes}m")\n\n    parts.append(f"{seconds}s")\n    return " ".join(parts)\n\n\ndef system_uptime():\n    try:\n        uptime_seconds = float(Path("/proc/uptime").read_text().split()[0])\n    except Exception:\n        return "unavailable"\n\n    return format_duration(uptime_seconds)\n\n\ndef uptime_text(mode=""):\n    bot = format_duration(time.time() - started_at)\n\n    if mode == "bot":\n        return f"Bot uptime: {bot}"\n\n    if mode in {"system", "sys", "vps"}:\n        return f"System uptime: {system_uptime()}"\n\n    return f"Bot uptime: {bot}\\nSystem uptime: {system_uptime()}"\n\n\ndef about_text():\n    status = "alive" if shell.isalive() else "dead"\n    logging = "on" if log_enabled else "off"\n    editor = "none"\n\n    if editor_state:\n        dirty = "modified" if editor_state["dirty"] else "saved"\n        editor = f"{editor_state[\'path\']} ({dirty})"\n\n    return (\n        f"telegram-terminal {VERSION}\\n"\n        f"Uptime: {format_duration(time.time() - started_at)}\\n"\n        f"Shell: {status}\\n"\n        f"Session buffer: {len(output_buffer)} chars\\n"\n        f"Last command: {last_command or \'none\'}\\n"\n        f"Logging: {logging}\\n"\n        f"Editor: {editor}"\n    )\n\n\nasync def stream_shell_output():\n\n    global current_msg\n    global current_event\n    global output_buffer\n    global command_output_buffer\n    global command_file_output_buffer\n    global output_revision\n    global current_output_mode\n    global current_output_no_session\n    global current_shot_clear_after\n    global current_shot_save_path\n    global current_shot_wide\n    global current_shot_command\n    global current_command_started_at\n    global current_command_last_activity\n    global pending_shell_data\n    global terminal_waiting_prompt\n    global terminal_external_prompt\n\n    last_edit = 0\n    last_text = ""\n    seen_revision = output_revision\n\n    while True:\n\n        await asyncio.sleep(0.03)\n\n        if seen_revision != output_revision:\n            seen_revision = output_revision\n            last_edit = 0\n            last_text = ""\n\n        try:\n\n            if shell.isalive():\n\n                data = shell.read_nonblocking(\n                    size=4096,\n                    timeout=0.01\n                )\n\n                if data:\n\n                    command_finished = False\n\n                    if current_command_started_at:\n                        pending_shell_data += data\n\n                        if DONE_MARKER in pending_shell_data:\n                            raw_data = pending_shell_data.replace(DONE_MARKER, "", 1)\n                            pending_shell_data = ""\n                            command_finished = True\n                        elif len(pending_shell_data) > MARKER_HOLD_SIZE:\n                            raw_data = pending_shell_data[:-MARKER_HOLD_SIZE]\n                            pending_shell_data = pending_shell_data[-MARKER_HOLD_SIZE:]\n                        else:\n                            continue\n                    else:\n                        raw_data = data\n                        pending_shell_data = ""\n\n                    feed_terminal_screen(raw_data)\n                    cleaned = clean_output(raw_data)\n\n                    if not current_output_no_session:\n                        output_buffer += cleaned\n\n                    command_output_buffer += cleaned\n                    command_file_output_buffer += cleaned\n\n                    output_buffer = output_buffer[-MAX_BUFFER_SIZE:]\n                    command_output_buffer = command_output_buffer[-MAX_BUFFER_SIZE:]\n\n                    now = time.time()\n                    current_command_last_activity = now\n\n                    trimmed = command_message_preview()\n\n                    if command_finished:\n                        if not terminal_external_prompt:\n                            feed_terminal_prompt(newline=False)\n                            terminal_waiting_prompt = True\n                        else:\n                            terminal_waiting_prompt = False\n\n                        if current_msg:\n\n                            try:\n\n                                if current_log_path:\n                                    write_command_log(last_command or "", command_file_output_buffer, current_log_path)\n\n                                if current_output_mode == "ss":\n                                    target_event = current_event or current_msg\n                                    await send_terminal_screenshot(\n                                        target_event,\n                                        command_output_buffer,\n                                        wide=current_shot_wide,\n                                        save_path=current_shot_save_path,\n                                        command_line=current_shot_command,\n                                    )\n\n                                    try:\n                                        await current_msg.delete()\n                                    except Exception:\n                                        pass\n\n                                    if current_shot_clear_after:\n                                        output_buffer = ""\n                                        reset_terminal_screen()\n                                        output_revision += 1\n\n                                    current_output_mode = "chat"\n                                    current_output_no_session = False\n                                    current_shot_clear_after = False\n                                    current_shot_save_path = None\n                                    current_shot_wide = False\n                                    current_shot_command = None\n                                    current_msg = None\n                                    current_event = None\n                                    command_output_buffer = ""\n                                    command_file_output_buffer = ""\n                                    current_command_started_at = None\n                                    current_command_last_activity = None\n                                    last_text = trimmed\n                                    last_edit = now\n                                    continue\n\n                                if len(command_file_output_buffer) > MAX_MESSAGE_OUTPUT:\n                                    suffix = "\\n\\nOutput is large. Sending full output as .txt..."\n\n                                    if current_log_path:\n                                        suffix += f"\\nLog saved: {current_log_path}"\n\n                                    try:\n                                        await current_msg.edit(\n                                            tg_code(trimmed + suffix)\n                                        )\n                                    except Exception as e:\n                                        print(f"Final large-output edit error: {e}")\n\n                                    target_event = current_event or current_msg\n                                    await send_text_file(\n                                        target_event,\n                                        command_file_output_buffer,\n                                        "telegram-terminal-output.txt",\n                                        "Full output:"\n                                    )\n                                else:\n                                    suffix = f"\\n\\nLog saved: {current_log_path}" if current_log_path else ""\n                                    await current_msg.edit(\n                                        tg_code(trimmed + suffix)\n                                    )\n\n                                current_msg = None\n                                current_event = None\n                                command_output_buffer = ""\n                                command_file_output_buffer = ""\n                                current_output_mode = "chat"\n                                current_output_no_session = False\n                                current_shot_clear_after = False\n                                current_shot_save_path = None\n                                current_shot_command = None\n                                current_command_started_at = None\n                                current_command_last_activity = None\n                                last_text = trimmed\n                                last_edit = now\n\n                            except Exception as e:\n\n                                print(\n                                    f"Final Flush Error: {e}"\n                                )\n\n                    elif (\n                        current_msg and\n                        now - last_edit >= EDIT_INTERVAL\n                    ):\n\n                        if trimmed != last_text:\n\n                            try:\n\n                                await current_msg.edit(\n                                    tg_code(trimmed)\n                                )\n\n                                last_text = trimmed\n                                last_edit = now\n\n                            except FloodWaitError as e:\n\n                                print(\n                                    f"FloodWait: "\n                                    f"{e.seconds}s"\n                                )\n\n                                await asyncio.sleep(\n                                    e.seconds\n                                )\n\n                            except Exception as e:\n\n                                print(\n                                    f"Edit Error: {e}"\n                                )\n\n        except pexpect.exceptions.TIMEOUT:\n            pass\n\n        except pexpect.exceptions.EOF:\n            print("Shell EOF; restarting shell")\n            restart_shell()\n            reset_runtime_state()\n            last_text = ""\n            last_edit = 0\n\n        except Exception as e:\n            print(f"Stream Error: {e}")\n\n\nasync def shell_handler(event):\n\n    global current_msg\n    global current_event\n    global output_buffer\n    global command_output_buffer\n    global command_file_output_buffer\n    global output_revision\n    global last_command\n    global log_enabled\n    global current_log_path\n    global current_output_mode\n    global current_output_no_session\n    global current_shot_clear_after\n    global current_shot_save_path\n    global current_shot_wide\n    global current_shot_command\n    global current_command_started_at\n    global current_command_last_activity\n    global pending_shell_data\n    global terminal_waiting_prompt\n    global terminal_external_prompt\n    global shot_theme\n    global shot_title\n\n    if not event.out:\n        return\n\n    text = event.raw_text.strip()\n\n    if not text.startswith("$"):\n        return\n\n    command = text[1:].strip()\n\n    if not command:\n        return\n\n    command_key = command.lower().replace("+", " ").replace("-", " ")\n    command_key = " ".join(command_key.split())\n\n    aliases = {\n        "ctrl c": "ctrlc",\n        "control c": "ctrlc",\n        "ctrl d": "ctrld",\n        "control d": "ctrld",\n        "ctrl z": "ctrlz",\n        "control z": "ctrlz",\n        "ctrl b": "ctrlb",\n        "control b": "ctrlb",\n        "ctrl a": "ctrla",\n        "control a": "ctrla",\n        "ctrl l": "ctrll",\n        "control l": "ctrll",\n        "seta cima": "up",\n        "seta baixo": "down",\n        "seta esquerda": "left",\n        "seta direita": "right",\n    }\n\n    command_key = aliases.get(command_key, command_key)\n\n    current_time = datetime.now().strftime("%H:%M:%S")\n\n    if command_key in {"help", "tt help"}:\n        await event.reply(tg_code(build_help()))\n        return\n\n    if command_key == "tt status":\n        await event.reply(tg_code(shell_status()))\n        return\n\n    if command_key == "tt version":\n        await event.reply(tg_code(f"telegram-terminal {VERSION}"))\n        return\n\n    if command_key == "tt ping":\n        started = time.time()\n        msg = await event.reply(tg_code("pong"))\n        latency = int((time.time() - started) * 1000)\n        await msg.edit(tg_code(f"pong {latency}ms"))\n        return\n\n    if command_key == "tt uptime" or command_key.startswith("tt uptime "):\n        args = command.split(maxsplit=2)\n        mode = args[2].lower() if len(args) > 2 else ""\n\n        if mode and mode not in {"bot", "system", "sys", "vps"}:\n            await event.reply(tg_code("Usage: $tt uptime [bot|system]"))\n            return\n\n        await event.reply(tg_code(uptime_text(mode)))\n        return\n\n    if command_key == "tt about":\n        await event.reply(tg_code(about_text()))\n        return\n\n    if command_key == "tt size" or command_key.startswith("tt size "):\n        if command_key == "tt size":\n            await event.reply(tg_code(f"Terminal size: {TERM_COLUMNS}x{TERM_LINES}"))\n            return\n\n        try:\n            cols, lines = parse_terminal_size(command.split(maxsplit=2)[2])\n            cols, lines = resize_terminal(cols, lines)\n            reset_terminal_screen()\n            output_revision += 1\n            await event.reply(tg_code(f"Terminal resized: {cols}x{lines}"))\n        except Exception as e:\n            await event.reply(tg_code(str(e)))\n\n        return\n\n    if command_key in {"tt theme", "shot theme"} or command_key.startswith("tt theme ") or command_key.startswith("shot theme "):\n        args = command.split(maxsplit=2)\n\n        if len(args) < 3:\n            names = ", ".join(sorted(SHOT_THEMES))\n            await event.reply(tg_code(f"Current theme: {shot_theme}\\nAvailable: {names}"))\n            return\n\n        selected = args[2].strip().lower()\n\n        if selected not in SHOT_THEMES:\n            names = ", ".join(sorted(SHOT_THEMES))\n            await event.reply(tg_code(f"Unknown theme: {selected}\\nAvailable: {names}"))\n            return\n\n        shot_theme = selected\n        await event.reply(tg_code(f"Screenshot theme: {shot_theme}"))\n        return\n\n    if command_key in {"tt title", "shot title"} or command_key.startswith("tt title ") or command_key.startswith("shot title "):\n        args = command.split(maxsplit=2)\n\n        if len(args) < 3 or not args[2].strip():\n            await event.reply(tg_code(f"Screenshot title: {shot_title}"))\n            return\n\n        shot_title = args[2].strip()[:100]\n        await event.reply(tg_code(f"Screenshot title: {shot_title}"))\n        return\n\n    if command_key == "tt reset" or command_key == "tt cleanup":\n        reset_runtime_state()\n\n        if not shell.isalive():\n            restart_shell()\n\n        await event.reply(tg_code("Runtime state reset."))\n        return\n\n    if command_key == "buf tail" or command_key.startswith("buf tail "):\n        tail_arg = command[8:].strip()\n        content = tail_output(tail_arg)\n\n        if len(content) > MAX_MESSAGE_OUTPUT:\n            await send_text_file(\n                event,\n                content,\n                "telegram-terminal-tail.txt",\n                "Tail output:"\n            )\n        else:\n            await event.reply(tg_code(content))\n\n        return\n\n    if command.startswith("shot run "):\n        run_text = command[9:].strip()\n        current_shot_clear_after = False\n        current_output_no_session = False\n        current_shot_save_path = None\n        current_shot_wide = False\n        current_shot_command = None\n\n        while True:\n            if run_text.startswith("clear "):\n                current_shot_clear_after = True\n                run_text = run_text[6:].strip()\n                continue\n\n            if run_text.startswith("wide "):\n                current_shot_wide = True\n                run_text = run_text[5:].strip()\n                continue\n\n            if run_text.startswith("--no-session "):\n                current_output_no_session = True\n                run_text = run_text[13:].strip()\n                continue\n\n            break\n\n        command = run_text\n\n        if not command:\n            await event.reply(tg_code("Usage: $shot run <command>"))\n            return\n\n        command_key = command.lower().replace("+", " ").replace("-", " ")\n        command_key = " ".join(command_key.split())\n        command_key = aliases.get(command_key, command_key)\n        current_output_mode = "ss"\n        current_shot_command = command\n\n    elif command_key == "shot run":\n        await event.reply(tg_code("Usage: $shot run <command>"))\n        return\n\n    if command_key == "shot" or command_key.startswith("shot "):\n        shot_args = command.split()\n        wide = False\n        clear_after = False\n        live = False\n        live_seconds = SHOT_LIVE_SECONDS\n        tail_arg = ""\n        idx = 1\n\n        while idx < len(shot_args):\n            arg = shot_args[idx]\n\n            if arg == "wide":\n                wide = True\n            elif arg == "clear":\n                clear_after = True\n            elif arg == "live":\n                live = True\n            elif live and arg.isdigit():\n                live_seconds = arg\n            else:\n                tail_arg = arg\n\n            idx += 1\n\n        use_terminal = not tail_arg\n\n        if live:\n            await send_terminal_live_shot(\n                event,\n                tail_output(tail_arg),\n                seconds=live_seconds,\n                wide=wide,\n                use_terminal=use_terminal,\n            )\n        else:\n            await send_terminal_screenshot(\n                event,\n                tail_output(tail_arg),\n                wide=wide,\n                save_path=None,\n                use_terminal=use_terminal,\n            )\n\n        if clear_after:\n            output_buffer = ""\n            reset_terminal_screen()\n            output_revision += 1\n\n        return\n\n    if command_key == "buf send" or command_key.startswith("buf send "):\n        args = command.split(maxsplit=2)\n        filename = args[2].strip() if len(args) > 2 else "telegram-terminal-buffer.txt"\n\n        if not filename.endswith(".txt"):\n            filename += ".txt"\n\n        if not output_buffer:\n            await event.reply(tg_code("Output buffer is empty."))\n            return\n\n        await send_text_file(\n            event,\n            output_buffer,\n            Path(filename).name,\n            "Output buffer:"\n        )\n        return\n\n    if command_key == "buf save" or command_key.startswith("buf save "):\n        args = command.split(maxsplit=2)\n\n        if len(args) < 3:\n            await event.reply(tg_code("Usage: $buf save <file.txt>"))\n            return\n\n        if not output_buffer:\n            await event.reply(tg_code("Output buffer is empty."))\n            return\n\n        save_path = Path(args[2]).expanduser()\n        save_path.parent.mkdir(parents=True, exist_ok=True)\n        save_path.write_text(output_buffer, encoding="utf-8", errors="replace")\n        await event.reply(tg_code(f"Output buffer saved: {save_path}"))\n        return\n\n    if command_key == "tt save session" or command_key.startswith("tt save session "):\n        args = command.split(maxsplit=2)\n        filename = args[2].strip() if len(args) > 2 else "telegram-terminal-session.txt"\n\n        if not filename.endswith(".txt"):\n            filename += ".txt"\n\n        if not output_buffer:\n            await event.reply(tg_code("Output buffer is empty."))\n            return\n\n        save_path = Path(filename).expanduser()\n        save_path.parent.mkdir(parents=True, exist_ok=True)\n        save_path.write_text(output_buffer, encoding="utf-8", errors="replace")\n        await event.reply(tg_code(f"Session saved: {save_path}"))\n        return\n\n    if command_key == "buf status":\n        await event.reply(tg_code(buffer_status()))\n        return\n\n    if command_key == "buf clear":\n        output_buffer = ""\n        command_output_buffer = ""\n        command_file_output_buffer = ""\n        pending_shell_data = ""\n        current_msg = None\n        current_event = None\n        current_output_mode = "chat"\n        current_output_no_session = False\n        current_shot_clear_after = False\n        current_shot_save_path = None\n        current_shot_wide = False\n        current_shot_command = None\n        current_command_started_at = None\n        current_command_last_activity = None\n        reset_terminal_screen()\n        output_revision += 1\n        await event.reply(tg_code("Session output buffer and current command state cleared."))\n        return\n\n    if command_key.startswith("buf "):\n        await event.reply(tg_code("Usage: $buf status | $buf clear | $buf tail | $buf send | $buf save"))\n        return\n\n    if command_key == "cmd history" or command_key.startswith("cmd history "):\n        args = command.split(maxsplit=2)\n        limit = 30\n\n        if len(args) > 2:\n            try:\n                limit = max(1, int(args[2]))\n            except ValueError:\n                limit = 30\n\n        await event.reply(tg_code(history_preview(limit)))\n        return\n\n    if command_key == "cmd last":\n        await event.reply(tg_code(last_command or "No command has been executed yet."))\n        return\n\n    if command_key.startswith("cmd rerun "):\n        try:\n            index = int(command.split(maxsplit=2)[2])\n\n            if index < 1 or index > len(command_history):\n                raise ValueError\n\n            command = command_history[index - 1]\n            command_key = command.lower().replace("+", " ").replace("-", " ")\n            command_key = " ".join(command_key.split())\n            command_key = aliases.get(command_key, command_key)\n\n            await event.reply(tg_code(f"Rerun #{index}:\\n{command}"))\n        except Exception:\n            await event.reply(tg_code(f"Usage: $cmd rerun N\\n\\n{history_preview()}"))\n            return\n\n    if command_key == "out log" or command_key.startswith("out log "):\n        arg = command[7:].strip().lower()\n\n        if arg == "on":\n            log_enabled = True\n            await event.reply(tg_code("Logging enabled. Outputs will be saved in logs/."))\n        elif arg == "off":\n            log_enabled = False\n            await event.reply(tg_code("Logging disabled."))\n        elif arg == "status" or not arg:\n            status = "on" if log_enabled else "off"\n            await event.reply(tg_code(f"Logging: {status}"))\n        else:\n            await event.reply(tg_code("Usage: $out log on | $out log off | $out log status"))\n\n        return\n\n    if command_key in ("tt restart", "tt restart shell"):\n        restart_shell()\n        reset_runtime_state()\n        await event.reply(tg_code("Shell restarted."))\n        return\n\n    if await handle_editor_command(event, command):\n        return\n\n    if command.startswith("ttget "):\n        await send_file(event, command)\n        return\n\n    if command.startswith("ttput "):\n        await receive_file(event, command)\n        return\n\n    control_sequences = {\n        "ctrlc": "\\x03",\n        "ctrld": "\\x04",\n        "ctrlz": "\\x1a",\n        "ctrlb": "\\x02",\n        "ctrla": "\\x01",\n        "ctrll": "\\x0c",\n        "tab": "\\t",\n        "up": "\\x1b[A",\n        "down": "\\x1b[B",\n        "right": "\\x1b[C",\n        "left": "\\x1b[D",\n    }\n\n    named_keys = {\n        "esc": "\\x1b",\n        "backspace": "\\x7f",\n        "delete": "\\x1b[3~",\n        "home": "\\x1b[H",\n        "end": "\\x1b[F",\n        "pgup": "\\x1b[5~",\n        "pgdn": "\\x1b[6~",\n        "space": " ",\n        "f1": "\\x1bOP",\n        "f2": "\\x1bOQ",\n        "f3": "\\x1bOR",\n        "f4": "\\x1bOS",\n        "f5": "\\x1b[15~",\n        "f6": "\\x1b[17~",\n        "f7": "\\x1b[18~",\n        "f8": "\\x1b[19~",\n        "f9": "\\x1b[20~",\n        "f10": "\\x1b[21~",\n        "f11": "\\x1b[23~",\n        "f12": "\\x1b[24~",\n    }\n\n    if command_key == "enter":\n        try:\n            shell.sendline("")\n            print(f"[{current_time}] You Sent ENTER")\n            await event.reply(tg_code("ENTER sent"))\n        except Exception as e:\n            await event.reply(tg_code(f"ENTER Error:\\n{e}"))\n        return\n\n    if command_key in control_sequences:\n        try:\n            interrupted_started_at = current_command_started_at\n            shell.send(control_sequences[command_key])\n\n            if command_key == "ctrlc" and interrupted_started_at:\n                await asyncio.sleep(0.2)\n\n                if shell.isalive():\n                    shell.sendline(f"printf \'\\n{DONE_MARKER}\\n\'")\n\n                await asyncio.sleep(1.0)\n\n                if current_command_started_at == interrupted_started_at:\n                    preview = command_message_preview()\n                    suffix = "\\n\\nInterrupted."\n\n                    if current_msg:\n                        try:\n                            await current_msg.edit(tg_code((preview + suffix)[-MAX_MESSAGE_OUTPUT:]))\n                        except Exception as e:\n                            print(f"Ctrl+C final edit error: {e}")\n\n                    command_output_buffer = ""\n                    command_file_output_buffer = ""\n                    pending_shell_data = ""\n                    current_msg = None\n                    current_event = None\n                    current_output_mode = "chat"\n                    current_output_no_session = False\n                    current_shot_clear_after = False\n                    current_shot_save_path = None\n                    current_shot_wide = False\n                    current_shot_command = None\n                    current_command_started_at = None\n                    current_command_last_activity = None\n                    terminal_waiting_prompt = False\n                    feed_terminal_prompt(newline=False)\n                    output_revision += 1\n\n            print(f"[{current_time}] You Sent {command_key.upper()}")\n            await event.reply(tg_code(f"{command_key.upper()} sent"))\n        except Exception as e:\n            await event.reply(tg_code(f"Control Error:\\n{e}"))\n        return\n\n    if command.startswith("key "):\n        key_name = command[4:].strip().lower()\n\n        if key_name not in named_keys:\n            await event.reply(tg_code(f"Unknown key: {key_name}"))\n            return\n\n        try:\n            shell.send(named_keys[key_name])\n            await event.reply(tg_code(f"{key_name.upper()} sent"))\n        except Exception as e:\n            await event.reply(tg_code(f"Key Error:\\n{e}"))\n        return\n\n    if command.startswith("ttpaste "):\n        try:\n            pasted = command[8:]\n            shell.send(pasted)\n            await event.reply(tg_code(f"Pasted {len(pasted)} chars"))\n        except Exception as e:\n            await event.reply(tg_code(f"Paste Error:\\n{e}"))\n        return\n\n    if command.startswith("ttinput "):\n\n        user_input = command[8:]\n\n        try:\n\n            shell.sendline(user_input)\n\n            print(\n                f"[{current_time}] "\n                f"Input: {user_input}"\n            )\n\n            if terminal_external_prompt:\n                await event.reply(tg_code("Input sent"))\n            else:\n                await event.reply(\n                    tg_code(f"Input Sent:\\n{user_input}")\n                )\n\n        except Exception as e:\n\n            await event.reply(\n                tg_code(f"Input Error:\\n{e}")\n            )\n\n        return\n\n    if is_interactive_shell_command(command) or (terminal_external_prompt and is_shell_exit_command(command)):\n        print(\n            f"[{current_time}] "\n            f"Interactive: {command}"\n        )\n\n        last_command = command\n        command_history.append(command)\n        command_history[:] = command_history[-200:]\n        command_output_buffer = ""\n        command_file_output_buffer = ""\n        output_revision += 1\n        current_event = event\n\n        if not terminal_external_prompt:\n            # Interactive commands such as su/ssh own the prompt after this point.\n            # Start their virtual screen clean so old local prompts do not mix with\n            # the real remote/user prompt.\n            reset_terminal_screen()\n        terminal_waiting_prompt = False\n\n        current_command_started_at = None\n        current_command_last_activity = None\n        current_msg = None\n\n        try:\n            shell.sendline(command)\n            terminal_external_prompt = not is_shell_exit_command(command)\n\n            if current_output_mode == "ss":\n                await asyncio.sleep(1)\n                await send_terminal_screenshot(event, command_output_buffer, wide=current_shot_wide, save_path=current_shot_save_path, command_line=current_shot_command)\n\n                if current_shot_clear_after:\n                    output_buffer = ""\n                    reset_terminal_screen()\n                    output_revision += 1\n\n                current_output_mode = "chat"\n                current_output_no_session = False\n                current_shot_clear_after = False\n                current_shot_save_path = None\n                current_shot_wide = False\n                current_shot_command = None\n            else:\n                await event.reply(tg_code("Interactive command sent"))\n        except Exception as e:\n            await event.reply(tg_code(f"Interactive Error:\\n{e}"))\n\n        return\n\n    print(\n        f"[{current_time}] "\n        f"You Executed: {command}"\n    )\n\n    last_command = command\n    command_history.append(command)\n    command_history[:] = command_history[-200:]\n\n    command_output_buffer = ""\n    command_file_output_buffer = ""\n    output_revision += 1\n    current_event = event\n\n    if not terminal_external_prompt:\n        feed_terminal_prompt(command, replace_current=terminal_waiting_prompt)\n    terminal_waiting_prompt = False\n    update_shell_cwd(command)\n    current_command_started_at = time.time()\n    current_command_last_activity = current_command_started_at\n    current_log_path = create_log_path(command) if log_enabled else None\n\n    if current_output_mode == "ss":\n        current_msg = await event.reply(tg_code(f"Capturing:\\n{command}"))\n    else:\n        current_msg = await event.reply(\n            tg_code(f"Running:\\n{command}")\n        )\n\n    try:\n\n        builtin_commands = [\n            "cd",\n            "export",\n            "alias",\n            "source",\n            "set",\n            "unset",\n            "history",\n            "exit"\n        ]\n\n        first_word = command.strip().split()[0]\n\n        if first_word in builtin_commands:\n\n            shell.sendline(\n                f"{command}; echo {DONE_MARKER}"\n            )\n\n        else:\n\n            shell.sendline(\n                f"stdbuf -oL -eL {command}; "\n                f"echo {DONE_MARKER}"\n            )\n\n    except Exception as e:\n\n        await current_msg.edit(\n            tg_code(f"Execution Error:\\n{e}")\n        )\n\n\nasync def start(topuser_client):\n    global client\n    client = topuser_client\n    asyncio.create_task(stream_shell_output())\n    asyncio.create_task(shell_watchdog())\n    client.add_event_handler(shell_handler, events.NewMessage)\n\n\nasync def main():\n    raise RuntimeError("telegram-terminal is embedded in TopUser. Run personal-userbot.py instead.")\n\n\nif __name__ == "__main__":\n    asyncio.run(main())\n'
@@ -169,8 +169,6 @@ def parse_quote_options(raw):
     text_parts = []
 
     for arg in args:
-        if arg == "--keep":
-            continue
         if arg == "--png":
             send_png = True
         elif arg.isdigit() and not text_parts:
@@ -315,10 +313,6 @@ def startup_notice_text():
         "Prefix: $\n"
         "Help: $help"
     )
-
-
-def keep_generated_files(raw_options):
-    return "--keep" in (raw_options or "").split()
 
 
 def cleanup_files(*paths):
@@ -719,52 +713,42 @@ def parse_download_options(raw):
     return keep_files, url
 
 
-def run_ytdlp_download(url, output_dir):
-    output_dir.mkdir(parents=True, exist_ok=True)
-    template = output_dir / "%(title).90s-%(id)s.%(ext)s"
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "yt_dlp",
-            "--no-playlist",
-            "--restrict-filenames",
-            "-f",
-            "bv*+ba/best",
-            "--merge-output-format",
-            "mp4",
-            "-o",
-            str(template),
-            url,
-        ],
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-
-    files = [path for path in output_dir.iterdir() if path.is_file()]
-
-    if not files:
-        raise RuntimeError(result.stderr.strip() or "yt-dlp did not create a file")
-
-    return max(files, key=lambda item: item.stat().st_mtime)
-
 
 NAYAN_API_BASE = "https://nayan-video-downloader.vercel.app"
 NAYAN_ENDPOINTS = {
+    "api": "alldl",
+    "all": "alldl",
+    "alldl": "alldl",
+    "alldown": "alldl",
+    "video": "alldl",
     "yt": "ytdown",
     "youtube": "ytdown",
+    "ytdl": "ytdown",
     "tiktok": "tikdown",
     "tiktol": "tikdown",
     "tt": "tikdown",
+    "tik": "tikdown",
     "fb": "fbdown2",
     "facebook": "fbdown2",
     "ig": "alldl",
     "insta": "alldl",
     "instagram": "alldl",
-    "video": "alldl",
-    "alldl": "alldl",
+    "x": "alldl",
+    "twitter": "alldl",
+    "tweet": "alldl",
+    "pin": "alldl",
+    "pinterest": "alldl",
+    "threads": "alldl",
+    "thread": "alldl",
+    "soundcloud": "alldl",
+    "sc": "alldl",
+    "likee": "alldl",
+    "terabox": "alldl",
+    "spotify": "alldl",
+    "gdrive": "alldl",
+    "drive": "alldl",
+    "capcut": "alldl",
+    "ndown": "alldl",
 }
 
 
@@ -839,6 +823,48 @@ def nayan_best_media_url(data):
     return urls[0][1]
 
 
+def collect_audio_urls(value, parent_key=""):
+    urls = []
+
+    if isinstance(value, dict):
+        for key, item in value.items():
+            urls.extend(collect_audio_urls(item, str(key).lower()))
+    elif isinstance(value, list):
+        for item in value:
+            urls.extend(collect_audio_urls(item, parent_key))
+    elif isinstance(value, str):
+        text = value.strip()
+
+        if text.startswith(("http://", "https://")):
+            lower = text.lower().split("?", 1)[0]
+            key = parent_key.lower()
+            score = 0
+
+            if lower.endswith((".mp3", ".m4a", ".aac", ".ogg", ".wav", ".opus")):
+                score += 8
+
+            if any(word in key for word in ("audio", "music", "mp3", "sound", "song")):
+                score += 5
+
+            if any(word in key or word in lower for word in ("thumb", "cover", "image", "photo", "avatar")):
+                score -= 5
+
+            if score > 0:
+                urls.append((score, text))
+
+    return urls
+
+
+def nayan_best_audio_url(data):
+    urls = collect_audio_urls(data)
+
+    if not urls:
+        return ""
+
+    urls.sort(key=lambda item: item[0], reverse=True)
+    return urls[0][1]
+
+
 def nayan_title(data):
     if isinstance(data, dict):
         for key in ("title", "name", "caption"):
@@ -879,28 +905,32 @@ def download_remote_media(url, output_dir, filename="video.mp4"):
 
 
 async def nayan_download_link(event, raw_options="", command_name="video"):
-    keep_files, url = parse_download_options(raw_options)
+    args = (raw_options or "").split()
+    audio_mode = any(arg.lower() in {"mp3", "audio", "music"} for arg in args)
+    cleaned_options = " ".join(arg for arg in args if arg.lower() not in {"mp3", "audio", "music"})
+    keep_files, url = parse_download_options(cleaned_options)
 
     if not url:
         reply = await event.get_reply_message()
         url = extract_url(getattr(reply, "raw_text", "") if reply else "")
 
     if not url:
-        await event.reply(tg_code(f"Use: .{command_name} URL, or reply to a message with URL"))
+        await event.reply(tg_code(f"Use: .{command_name} [mp3] URL, or reply to a message with URL"))
         return
 
     endpoint = NAYAN_ENDPOINTS.get(command_name, "alldl")
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     output_dir = DOWNLOAD_DIR / f"nayan-{stamp}"
-    status = await event.reply(tg_code("fetching video..."))
+    status = await event.reply(tg_code("fetching audio..." if audio_mode else "fetching video..."))
     downloaded_path = None
 
     try:
         data = await asyncio.to_thread(fetch_nayan_response, endpoint, url)
-        media_url = nayan_best_media_url(data)
+        media_url = nayan_best_audio_url(data) if audio_mode else nayan_best_media_url(data)
 
         if not media_url:
-            await status.edit(tg_code("API did not return a downloadable video URL."))
+            kind = "audio/MP3" if audio_mode else "video"
+            await status.edit(tg_code(f"API did not return a downloadable {kind} URL."))
             return
 
         caption = nayan_title(data)
@@ -914,7 +944,8 @@ async def nayan_download_link(event, raw_options="", command_name="video"):
                 reply_to=topic_reply_to(event),
             )
         except Exception:
-            downloaded_path = await asyncio.to_thread(download_remote_media, media_url, output_dir)
+            filename = "audio.mp3" if audio_mode else "video.mp4"
+            downloaded_path = await asyncio.to_thread(download_remote_media, media_url, output_dir, filename)
             await client.send_file(
                 event.chat_id,
                 str(downloaded_path),
@@ -937,7 +968,7 @@ async def nayan_download_link(event, raw_options="", command_name="video"):
                 pass
 
 
-async def download_link(event, raw_options=""):
+async def download_mp3(event, raw_options=""):
     keep_files, url = parse_download_options(raw_options)
 
     if not url:
@@ -945,55 +976,34 @@ async def download_link(event, raw_options=""):
         url = extract_url(getattr(reply, "raw_text", "") if reply else "")
 
     if not url:
-        await event.reply(tg_code("Use: .download URL, or reply to a message with URL"))
+        await event.reply(tg_code("Use: .mp3 URL, or reply to a message with URL"))
         return
 
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    output_dir = DOWNLOAD_DIR / stamp
-    status = await event.reply(tg_code("downloading..."))
+    output_dir = DOWNLOAD_DIR / f"mp3-{stamp}"
+    status = await event.reply(tg_code("fetching mp3..."))
     downloaded_path = None
-    ytdlp_error = None
 
     try:
-        try:
-            downloaded_path = await asyncio.to_thread(run_ytdlp_download, url, output_dir)
-            await client.send_file(
-                event.chat_id,
-                str(downloaded_path),
-                caption=downloaded_path.name,
-                force_document=False,
-                reply_to=topic_reply_to(event),
-            )
-            await status.delete()
-            log(f".download yt-dlp sent in chat {event.chat_id}: {downloaded_path.name}")
-            return
-        except FileNotFoundError:
-            raise
-        except subprocess.CalledProcessError as e:
-            error = (e.stderr or e.stdout or "unknown yt-dlp error").strip().splitlines()[-1:]
-            ytdlp_error = error[0] if error else "unknown yt-dlp error"
-        except Exception as e:
-            ytdlp_error = str(e)
-
-        await status.edit(tg_code("yt-dlp failed, trying API..."))
         data = await asyncio.to_thread(fetch_nayan_response, "alldl", url)
-        media_url = nayan_best_media_url(data)
+        audio_url = nayan_best_audio_url(data)
 
-        if not media_url:
-            raise RuntimeError("API did not return a downloadable video URL")
+        if not audio_url:
+            await status.edit(tg_code("API did not return an audio/MP3 URL for this link."))
+            return
 
         caption = nayan_title(data)
 
         try:
             await client.send_file(
                 event.chat_id,
-                media_url,
+                audio_url,
                 caption=caption,
                 force_document=False,
                 reply_to=topic_reply_to(event),
             )
         except Exception:
-            downloaded_path = await asyncio.to_thread(download_remote_media, media_url, output_dir)
+            downloaded_path = await asyncio.to_thread(download_remote_media, audio_url, output_dir, "audio.mp3")
             await client.send_file(
                 event.chat_id,
                 str(downloaded_path),
@@ -1003,12 +1013,9 @@ async def download_link(event, raw_options=""):
             )
 
         await status.delete()
-        log(f".download API fallback sent in chat {event.chat_id}: {media_url}")
-    except FileNotFoundError:
-        await status.edit(tg_code("Python executable was not found"))
+        log(f".mp3 API sent in chat {event.chat_id}: {audio_url}")
     except Exception as e:
-        detail = f"yt-dlp: {ytdlp_error}\nAPI: {e}" if ytdlp_error else str(e)
-        await status.edit(tg_code(f"Download failed:\n{detail}"))
+        await status.edit(tg_code(f"MP3 failed: {e}"))
     finally:
         if not keep_files:
             if downloaded_path:
@@ -1019,6 +1026,11 @@ async def download_link(event, raw_options=""):
                 pass
 
 
+
+async def download_link(event, raw_options=""):
+    await nayan_download_link(event, raw_options, "api")
+
+
 async def send_media_144p(event, raw_options=""):
     reply = await event.get_reply_message()
 
@@ -1026,7 +1038,6 @@ async def send_media_144p(event, raw_options=""):
         await event.reply(tg_code("Reply to a photo, sticker or video with .144p"))
         return
 
-    keep_files = keep_generated_files(raw_options)
     generated_paths = []
     MEDIA_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
@@ -1118,8 +1129,7 @@ async def send_media_144p(event, raw_options=""):
     except Exception as e:
         await status.edit(tg_code(f"144p failed: {e}"))
     finally:
-        if not keep_files:
-            cleanup_files(*generated_paths)
+        cleanup_files(*generated_paths)
 
 
 def author_color(name):
@@ -1368,7 +1378,6 @@ async def collect_quote_messages(event, reply, count):
 
 
 async def quote_message(event, raw_options=""):
-    keep_files = keep_generated_files(raw_options)
     generated_paths = []
     send_png, count, custom_text = parse_quote_options(raw_options)
     reply = await event.get_reply_message()
@@ -1409,8 +1418,7 @@ async def quote_message(event, raw_options=""):
         )
         log(f".q sticker sent in chat {event.chat_id}")
     finally:
-        if not keep_files:
-            cleanup_files(*generated_paths)
+        cleanup_files(*generated_paths)
 
 
 def export_media_label(message):
@@ -1544,46 +1552,37 @@ def build_chat_export_html(chat_title, scope_title, messages, users):
             "</button>"
         )
 
-    data_items = []
+    message_rows = []
+    last_day = None
 
     for item in messages:
-        date_value = item["date"].strftime("%Y-%m-%d") if item.get("date") else "Unknown date"
-        time_value = item["date"].strftime("%H:%M") if item.get("date") else "--:--"
-        username = item.get("username") or ""
-        search_text = f"{item['author']} {username} {item['text']}".lower()
-        data_items.append({
-            "date": date_value,
-            "time": time_value,
-            "author": item["author"],
-            "username": username,
-            "text": item["text"],
-            "user_id": str(item.get("user_id") or ""),
-            "search": search_text,
-        })
+        day = item["date"].strftime("%Y-%m-%d") if item.get("date") else "Unknown date"
 
-    users_html = "".join(user_items) or '<p class="empty">No users found.</p>' 
-    data_json = json.dumps(data_items, ensure_ascii=False).replace("</", "<\\/")
-    initial_rows = []
-    last_initial_date = ""
+        if day != last_day:
+            message_rows.append(f"<div class=\"day\" data-day=\"1\">{html.escape(day)}</div>")
+            last_day = day
 
-    for item in data_items[:300]:
-        if item["date"] != last_initial_date:
-            initial_rows.append(f'<div class="day">{html.escape(item["date"])}</div>')
-            last_initial_date = item["date"]
-
-        username_html = f"<span>{html.escape(item['username'])}</span>" if item.get("username") else ""
-        initial_rows.append(
-            '<article class="message">'
-            '<div class="message-top">' 
-            f"<strong>{html.escape(item['author'])}</strong>"
+        when = item["date"].strftime("%H:%M") if item.get("date") else "--:--"
+        author = html.escape(item["author"])
+        body = html.escape(item["text"]).replace("\n", "<br>")
+        username = html.escape(item.get("username") or "")
+        username_html = f"<span>{username}</span>" if username else ""
+        search_text = f"{item['author']} {item.get('username') or ''} {item['text']}".lower()
+        message_rows.append(
+            "<article class=\"message\" "
+            f"data-user=\"{html.escape(str(item.get('user_id') or ''), quote=True)}\" "
+            f"data-search=\"{html.escape(search_text, quote=True)}\">"
+            "<div class=\"message-top\">"
+            f"<strong>{author}</strong>"
             f"{username_html}"
-            f"<time>{html.escape(item['time'])}</time>"
+            f"<time>{when}</time>"
             "</div>"
-            f"<p>{html.escape(item['text']).replace(chr(10), '<br>')}</p>"
+            f"<p>{body}</p>"
             "</article>"
         )
 
-    initial_messages_html = "".join(initial_rows) or '<p class="empty">No messages found.</p>' 
+    users_html = "".join(user_items) or "<p class=\"empty\">No users found.</p>"
+    messages_html = "".join(message_rows) or "<p class=\"empty\">No messages found.</p>"
     return """<!doctype html>
 <html lang=\"en\">
 <head>
@@ -1612,7 +1611,7 @@ main {{ min-width: 0; padding: 24px 24px 48px; }}
 .user-item b, .user-item small {{ display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
 .user-item small {{ color: rgb(148, 158, 170); margin-top: 3px; }}
 .user-item em {{ color: rgb(155, 163, 175); font-style: normal; font-size: 13px; }}
-.user-item.hidden {{ display: none; }}
+.user-item.hidden, .message.hidden, .day.hidden {{ display: none; }}
 .filter-all {{ margin-bottom: 12px; }}
 .results {{ color: rgb(155, 163, 175); margin: 0 0 14px; font-size: 13px; }}
 .day {{ color: rgb(155, 163, 175); font-size: 13px; font-weight: 700; margin: 20px 0 10px; }}
@@ -1622,9 +1621,6 @@ main {{ min-width: 0; padding: 24px 24px 48px; }}
 .message-top span {{ color: rgb(148, 158, 170); font-size: 13px; }}
 .message-top time {{ margin-left: auto; color: rgb(132, 141, 153); font-size: 12px; }}
 .message p {{ margin: 9px 0 0; line-height: 1.45; white-space: normal; overflow-wrap: anywhere; }}
-.controls {{ display: flex; gap: 10px; align-items: center; margin: 14px 0 0; }}
-.controls button {{ border: 1px solid rgb(48, 54, 62); background: rgb(17, 20, 24); color: rgb(232, 235, 239); border-radius: 8px; padding: 10px 12px; cursor: pointer; }}
-.controls button:disabled {{ opacity: 0.45; cursor: default; }}
 .empty {{ padding: 18px; color: rgb(155, 163, 175); }}
 @media (max-width: 850px) {{ header {{ position: static; }} .layout {{ grid-template-columns: 1fr; }} aside {{ position: static; height: auto; border-right: 0; border-bottom: 1px solid rgb(35, 39, 45); }} .summary {{ grid-template-columns: 1fr; }} .message-top time {{ margin-left: 0; }} }}
 </style>
@@ -1647,61 +1643,46 @@ main {{ min-width: 0; padding: 24px 24px 48px; }}
 <div><b>{scope}</b><span>scope</span></div>
 </section>
 <p id=\"results\" class=\"results\"></p>
-<section id=\"messages\">{initial_messages_html}</section>
-<div class=\"controls\"><button id=\"prevPage\" type=\"button\">Previous</button><button id=\"nextPage\" type=\"button\">Next</button></div>
+<section id=\"messages\">{messages_html}</section>
 </main>
 </div>
-<script id=\"exportData\" type=\"application/json\">{data_json}</script>
 <script>
-const allMessages = JSON.parse(document.getElementById('exportData').textContent);
-const pageSize = 300;
 const search = document.getElementById('search');
 const resultText = document.getElementById('results');
-const messagesEl = document.getElementById('messages');
-const prevPage = document.getElementById('prevPage');
-const nextPage = document.getElementById('nextPage');
 const userButtons = Array.from(document.querySelectorAll('.user-item'));
+const messages = Array.from(document.querySelectorAll('.message'));
+const days = Array.from(document.querySelectorAll('.day'));
 let selectedUser = '';
-let currentPage = 0;
-let filtered = allMessages;
 function normalize(value) {{ return (value || '').toLowerCase().trim(); }}
-function escapeHtml(value) {{ return String(value).replace(/[&<>\"']/g, char => ({{'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}}[char])); }}
 function applyFilters() {{
   const query = normalize(search.value);
+  let visible = 0;
   userButtons.forEach(button => {{
     const isAll = button.dataset.user === '';
     const matches = isAll || !query || normalize(button.dataset.search).includes(query);
     button.classList.toggle('hidden', !matches);
     button.classList.toggle('active', button.dataset.user === selectedUser);
   }});
-  filtered = allMessages.filter(message => {{
-    const userMatch = !selectedUser || message.user_id === selectedUser;
-    const textMatch = !query || normalize(message.search).includes(query);
-    return userMatch && textMatch;
+  messages.forEach(message => {{
+    const userMatch = !selectedUser || message.dataset.user === selectedUser;
+    const textMatch = !query || normalize(message.dataset.search).includes(query);
+    const show = userMatch && textMatch;
+    message.classList.toggle('hidden', !show);
+    if (show) visible += 1;
   }});
-  currentPage = 0;
-  renderPage();
-}}
-function renderPage() {{
-  const start = currentPage * pageSize;
-  const page = filtered.slice(start, start + pageSize);
-  let html = '';
-  let lastDate = '';
-  for (const message of page) {{
-    if (message.date !== lastDate) {{ html += `<div class=\"day\">${{escapeHtml(message.date)}}</div>`; lastDate = message.date; }}
-    const username = message.username ? `<span>${{escapeHtml(message.username)}}</span>` : '';
-    html += `<article class=\"message\"><div class=\"message-top\"><strong>${{escapeHtml(message.author)}}</strong>${{username}}<time>${{escapeHtml(message.time)}}</time></div><p>${{escapeHtml(message.text).replace(/\n/g, '<br>')}}</p></article>`;
-  }}
-  messagesEl.innerHTML = html || '<p class=\"empty\">No messages found.</p>';
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  resultText.textContent = `${{filtered.length}} messages · page ${{currentPage + 1}}/${{totalPages}}`;
-  prevPage.disabled = currentPage === 0;
-  nextPage.disabled = currentPage >= totalPages - 1;
+  days.forEach(day => {{
+    let next = day.nextElementSibling;
+    let hasVisible = false;
+    while (next && !next.dataset.day) {{
+      if (next.classList && next.classList.contains('message') && !next.classList.contains('hidden')) {{ hasVisible = true; break; }}
+      next = next.nextElementSibling;
+    }}
+    day.classList.toggle('hidden', !hasVisible);
+  }});
+  resultText.textContent = `${{visible}} visible messages`;
 }}
 userButtons.forEach(button => button.addEventListener('click', () => {{ selectedUser = button.dataset.user || ''; applyFilters(); }}));
 search.addEventListener('input', applyFilters);
-prevPage.addEventListener('click', () => {{ if (currentPage > 0) {{ currentPage -= 1; renderPage(); }} }});
-nextPage.addEventListener('click', () => {{ if ((currentPage + 1) * pageSize < filtered.length) {{ currentPage += 1; renderPage(); }} }});
 applyFilters();
 </script>
 </body>
@@ -1714,8 +1695,7 @@ applyFilters();
         total_messages=total_messages,
         total_users=total_users,
         users_html=users_html,
-        data_json=data_json,
-        initial_messages_html=initial_messages_html,
+        messages_html=messages_html,
     )
 
 
@@ -1981,6 +1961,8 @@ async def handler(event):
         await clean_url_message(event, rest)
     elif name == "download":
         await download_link(event, rest)
+    elif name == "mp3":
+        await download_mp3(event, rest)
     elif name in NAYAN_ENDPOINTS:
         await nayan_download_link(event, rest, name)
     elif name == "144p":
