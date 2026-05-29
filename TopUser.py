@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import html
+import glob
 import json
 import types
 import os
@@ -17,6 +18,11 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
+
+try:
+    import readline
+except Exception:
+    readline = None
 
 try:
     from zoneinfo import ZoneInfo
@@ -2870,6 +2876,8 @@ CLI_HELP = """TopUser local CLI
   .delete <chat> <msg_id...>    delete one or more messages from a chat
   .delete <msg_id...> <chat>    same, when chat is the last argument
   .file <chat> <path> [caption] send a local file to chat/user/group
+  .pwd                          show local CLI folder
+  .cd <path>                    change local CLI folder
   .clear                        clear this terminal screen
   .clear logs                   delete files from logs/
   .alwaysonline [on|off|status] keep Telegram account shown online
@@ -3009,6 +3017,20 @@ async def delete_cli_messages(raw):
     print(f"deleted {count} message(s) from {chat}")
 
 
+def change_cli_directory(raw):
+    target = raw.strip() or "~"
+    new_path = Path(target).expanduser()
+
+    if not new_path.is_absolute():
+        new_path = Path.cwd() / new_path
+
+    if not new_path.exists() or not new_path.is_dir():
+        raise ValueError(f"Directory not found: {new_path}")
+
+    os.chdir(new_path)
+    print(f"cwd: {Path.cwd()}")
+
+
 def clear_cli_screen():
     os.system("cls" if os.name == "nt" else "clear")
 
@@ -3091,6 +3113,91 @@ async def run_local_shell(command):
     return text
 
 
+CLI_COMMANDS = [
+    ".help",
+    ".me",
+    ".say",
+    ".delete",
+    ".del",
+    ".rm",
+    ".file",
+    ".sendfile",
+    ".pwd",
+    ".cd",
+    ".clear",
+    ".logs",
+    ".alwaysonline",
+    ".online",
+    ".shell",
+    ".exit",
+    ".quit",
+]
+
+
+def complete_path_prefix(prefix):
+    expanded = os.path.expanduser(prefix or "")
+    matches = glob.glob(expanded + "*")
+    completions = []
+
+    for match in sorted(matches):
+        suffix = "/" if os.path.isdir(match) else " "
+        completions.append(match + suffix)
+
+    return completions
+
+
+def current_cli_token(buffer, beginidx, endidx):
+    token = buffer[beginidx:endidx]
+
+    if token.startswith(("'", '"')):
+        token = token[1:]
+
+    return token
+
+
+def cli_completer(text, state):
+    if readline is None:
+        return None
+
+    buffer = readline.get_line_buffer()
+    beginidx = readline.get_begidx()
+    endidx = readline.get_endidx()
+    stripped = buffer.lstrip()
+    prefix_len = len(buffer) - len(stripped)
+    local_begin = max(0, beginidx - prefix_len)
+    token = current_cli_token(buffer, beginidx, endidx)
+
+    if local_begin == 0:
+        options = [command + " " for command in CLI_COMMANDS if command.startswith(text)]
+    elif stripped.startswith((".file ", ".sendfile ", ".shell ", ".cd ", "!")):
+        options = complete_path_prefix(token)
+    else:
+        options = []
+
+    try:
+        return options[state]
+    except IndexError:
+        return None
+
+
+def setup_cli_readline():
+    if readline is None:
+        return
+
+    readline.set_completer(cli_completer)
+    readline.parse_and_bind("tab: complete")
+
+    try:
+        readline.set_completer_delims(" \t\n")
+    except Exception:
+        pass
+
+    try:
+        readline.set_completion_append_character("")
+    except Exception:
+        pass
+
+
 async def handle_cli_line(line):
     line = line.strip()
 
@@ -3127,6 +3234,10 @@ async def handle_cli_line(line):
             await delete_cli_messages(rest)
         elif name in {"file", "sendfile"}:
             await send_cli_file(rest)
+        elif name == "pwd":
+            print(f"cwd: {Path.cwd()}")
+        elif name == "cd":
+            change_cli_directory(rest)
         elif name == "clear":
             if rest.strip().lower() in {"logs", "log"}:
                 print(clear_log_files())
@@ -3145,7 +3256,8 @@ async def handle_cli_line(line):
 
 
 async def local_cli_loop():
-    print("Local CLI ready. Use .help, .say, .delete, .file, .shell, or exit.")
+    setup_cli_readline()
+    print("Local CLI ready. Use .help, .say, .delete, .file, .cd, .shell, or exit. TAB completes files.")
 
     while client.is_connected():
         try:
