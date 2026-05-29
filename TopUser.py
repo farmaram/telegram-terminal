@@ -1,10 +1,13 @@
 import asyncio
+import html
+import json
 import types
 import os
 import subprocess
 import re
 import sys
 import shutil
+import tempfile
 import textwrap
 import urllib.request
 from datetime import datetime
@@ -70,6 +73,7 @@ SHORT_URL_HOSTS = {"vt.tiktok.com", "vm.tiktok.com", "t.tiktok.com", "fb.watch"}
 client = TelegramClient(SESSION_NAME, api_id, api_hash)
 AVATAR_CACHE = {}
 ACTIVE_SPAMS = {}
+ACTIVE_EXPORTS = {}
 
 
 FALLBACK_TELEGRAM_TERMINAL_HELP = """telegram-terminal
@@ -97,12 +101,21 @@ Spam
 
 Links
   .cleanurl URL         remove tracking params from URL
-  .download URL         download video from YouTube/TikTok/Instagram
+  .download URL         download video with yt-dlp, API fallback
   .download --keep URL  keep downloaded file on disk after sending
+  .yt URL               download YouTube using API
+  .tiktok URL           download TikTok using API
+  .tiktol URL           same as .tiktok
 
 Media
   .144p                 reply to media and send a low quality version
   .144p --keep          keep generated media files on disk
+
+Chat
+  .exportchat           export current chat/topic as HTML
+  .exportchat ID/@user export another chat as HTML
+  .cancelexport         stop export in this chat/topic
+  .cl                   delete your messages in this chat/topic
 
 Files
   generated media is deleted after sending unless --keep is used"""
@@ -347,22 +360,55 @@ def ask_keep_online():
     return answer in {"yes", "y"}
 
 
+def quote_font_candidates(bold=False):
+    env_dir = os.environ.get("TOPUSER_FONT_DIR", "").strip()
+    roots = [Path.cwd(), Path(__file__).resolve().parent]
+    names = [
+        "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
+        "NotoSans-Bold.ttf" if bold else "NotoSans-Regular.ttf",
+        "Arial Bold.ttf" if bold else "Arial.ttf",
+        "LiberationSans-Bold.ttf" if bold else "LiberationSans-Regular.ttf",
+        "Roboto-Bold.ttf" if bold else "Roboto-Regular.ttf",
+    ]
+
+    if env_dir:
+        roots.insert(0, Path(env_dir).expanduser())
+
+    for root in roots:
+        for folder in (root / "assets" / "fonts", root / "fonts", root):
+            for name in names:
+                yield folder / name
+
+    system_dirs = [
+        Path("/usr/share/fonts/truetype/dejavu"),
+        Path("/usr/share/fonts/truetype/noto"),
+        Path("/usr/share/fonts/truetype/liberation2"),
+        Path("/usr/local/share/fonts"),
+        Path("/system/fonts"),
+        Path("/data/data/com.termux/files/usr/share/fonts/TTF"),
+        Path("/data/data/com.termux/files/usr/share/fonts"),
+        Path("/Library/Fonts"),
+        Path("/System/Library/Fonts"),
+        Path.home() / "Library" / "Fonts",
+        Path("C:/Windows/Fonts"),
+    ]
+
+    for folder in system_dirs:
+        for name in names:
+            yield folder / name
+
+
 def load_quote_font(size, bold=False):
-    candidates = []
+    seen = set()
 
-    if bold:
-        candidates.extend([
-            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
-            Path("/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf"),
-        ])
+    for candidate in quote_font_candidates(bold):
+        key = str(candidate)
 
-    candidates.extend([
-        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-        Path("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"),
-        Path("assets/fonts/DejaVuSansMono.ttf"),
-    ])
+        if key in seen:
+            continue
 
-    for candidate in candidates:
+        seen.add(key)
+
         if candidate.is_file():
             try:
                 return ImageFont.truetype(str(candidate), size=size)
@@ -705,6 +751,192 @@ def run_ytdlp_download(url, output_dir):
     return max(files, key=lambda item: item.stat().st_mtime)
 
 
+NAYAN_API_BASE = "https://nayan-video-downloader.vercel.app"
+NAYAN_ENDPOINTS = {
+    "yt": "ytdown",
+    "youtube": "ytdown",
+    "tiktok": "tikdown",
+    "tiktol": "tikdown",
+    "tt": "tikdown",
+    "fb": "fbdown2",
+    "facebook": "fbdown2",
+    "ig": "alldl",
+    "insta": "alldl",
+    "instagram": "alldl",
+    "video": "alldl",
+    "alldl": "alldl",
+}
+
+
+def nayan_api_url(endpoint, video_url):
+    params = {"url": video_url}
+
+    if endpoint == "fbdown2":
+        params["key"] = "nayan"
+
+    return f"{NAYAN_API_BASE}/{endpoint}?{urlencode(params)}"
+
+
+def fetch_nayan_response(endpoint, video_url):
+    request = urllib.request.Request(
+        nayan_api_url(endpoint, video_url),
+        headers={"User-Agent": "Mozilla/5.0"},
+        method="GET",
+    )
+
+    with urllib.request.urlopen(request, timeout=45) as response:
+        body = response.read().decode("utf-8", errors="replace")
+
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        return {"raw": body}
+
+
+def collect_media_urls(value, parent_key=""):
+    urls = []
+
+    if isinstance(value, dict):
+        for key, item in value.items():
+            urls.extend(collect_media_urls(item, str(key).lower()))
+    elif isinstance(value, list):
+        for item in value:
+            urls.extend(collect_media_urls(item, parent_key))
+    elif isinstance(value, str):
+        text = value.strip()
+
+        if text.startswith(("http://", "https://")):
+            lower = text.lower()
+            key = parent_key.lower()
+            bad = any(word in key or word in lower for word in ("thumb", "cover", "avatar", "image", "photo", "music", "audio", "mp3"))
+            good = any(word in key for word in ("video", "download", "url", "link", "hd", "sd", "nowm", "play"))
+            score = 0
+
+            if lower.split("?", 1)[0].endswith((".mp4", ".mov", ".webm", ".mkv")):
+                score += 6
+
+            if good:
+                score += 4
+
+            if "hd" in key:
+                score += 2
+
+            if bad:
+                score -= 5
+
+            urls.append((score, text))
+
+    return urls
+
+
+def nayan_best_media_url(data):
+    urls = collect_media_urls(data)
+
+    if not urls:
+        return ""
+
+    urls.sort(key=lambda item: item[0], reverse=True)
+    return urls[0][1]
+
+
+def nayan_title(data):
+    if isinstance(data, dict):
+        for key in ("title", "name", "caption"):
+            value = data.get(key)
+
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:120]
+
+        for value in data.values():
+            title = nayan_title(value)
+
+            if title:
+                return title
+    elif isinstance(data, list):
+        for value in data:
+            title = nayan_title(value)
+
+            if title:
+                return title
+
+    return "video"
+
+
+def download_remote_media(url, output_dir, filename="video.mp4"):
+    output_dir.mkdir(parents=True, exist_ok=True)
+    suffix = Path(urlsplit(url).path).suffix
+
+    if suffix and len(suffix) <= 8:
+        filename = f"video{suffix}"
+
+    path = output_dir / filename
+    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"}, method="GET")
+
+    with urllib.request.urlopen(request, timeout=120) as response, path.open("wb") as output:
+        shutil.copyfileobj(response, output)
+
+    return path
+
+
+async def nayan_download_link(event, raw_options="", command_name="video"):
+    keep_files, url = parse_download_options(raw_options)
+
+    if not url:
+        reply = await event.get_reply_message()
+        url = extract_url(getattr(reply, "raw_text", "") if reply else "")
+
+    if not url:
+        await event.reply(tg_code(f"Use: .{command_name} URL, or reply to a message with URL"))
+        return
+
+    endpoint = NAYAN_ENDPOINTS.get(command_name, "alldl")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    output_dir = DOWNLOAD_DIR / f"nayan-{stamp}"
+    status = await event.reply(tg_code("fetching video..."))
+    downloaded_path = None
+
+    try:
+        data = await asyncio.to_thread(fetch_nayan_response, endpoint, url)
+        media_url = nayan_best_media_url(data)
+
+        if not media_url:
+            await status.edit(tg_code("API did not return a downloadable video URL."))
+            return
+
+        caption = nayan_title(data)
+
+        try:
+            await client.send_file(
+                event.chat_id,
+                media_url,
+                caption=caption,
+                force_document=False,
+                reply_to=topic_reply_to(event),
+            )
+        except Exception:
+            downloaded_path = await asyncio.to_thread(download_remote_media, media_url, output_dir)
+            await client.send_file(
+                event.chat_id,
+                str(downloaded_path),
+                caption=caption,
+                force_document=False,
+                reply_to=topic_reply_to(event),
+            )
+
+        await status.delete()
+        log(f".{command_name} sent in chat {event.chat_id}: {media_url}")
+    except Exception as e:
+        await status.edit(tg_code(f"Download failed: {e}"))
+    finally:
+        if not keep_files:
+            if downloaded_path:
+                cleanup_files(downloaded_path)
+            try:
+                output_dir.rmdir()
+            except OSError:
+                pass
+
+
 async def download_link(event, raw_options=""):
     keep_files, url = parse_download_options(raw_options)
 
@@ -720,25 +952,63 @@ async def download_link(event, raw_options=""):
     output_dir = DOWNLOAD_DIR / stamp
     status = await event.reply(tg_code("downloading..."))
     downloaded_path = None
+    ytdlp_error = None
 
     try:
-        downloaded_path = await asyncio.to_thread(run_ytdlp_download, url, output_dir)
-        await client.send_file(
-            event.chat_id,
-            str(downloaded_path),
-            caption=downloaded_path.name,
-            force_document=False,
-            reply_to=topic_reply_to(event),
-        )
+        try:
+            downloaded_path = await asyncio.to_thread(run_ytdlp_download, url, output_dir)
+            await client.send_file(
+                event.chat_id,
+                str(downloaded_path),
+                caption=downloaded_path.name,
+                force_document=False,
+                reply_to=topic_reply_to(event),
+            )
+            await status.delete()
+            log(f".download yt-dlp sent in chat {event.chat_id}: {downloaded_path.name}")
+            return
+        except FileNotFoundError:
+            raise
+        except subprocess.CalledProcessError as e:
+            error = (e.stderr or e.stdout or "unknown yt-dlp error").strip().splitlines()[-1:]
+            ytdlp_error = error[0] if error else "unknown yt-dlp error"
+        except Exception as e:
+            ytdlp_error = str(e)
+
+        await status.edit(tg_code("yt-dlp failed, trying API..."))
+        data = await asyncio.to_thread(fetch_nayan_response, "alldl", url)
+        media_url = nayan_best_media_url(data)
+
+        if not media_url:
+            raise RuntimeError("API did not return a downloadable video URL")
+
+        caption = nayan_title(data)
+
+        try:
+            await client.send_file(
+                event.chat_id,
+                media_url,
+                caption=caption,
+                force_document=False,
+                reply_to=topic_reply_to(event),
+            )
+        except Exception:
+            downloaded_path = await asyncio.to_thread(download_remote_media, media_url, output_dir)
+            await client.send_file(
+                event.chat_id,
+                str(downloaded_path),
+                caption=caption,
+                force_document=False,
+                reply_to=topic_reply_to(event),
+            )
+
         await status.delete()
-        log(f".download sent in chat {event.chat_id}: {downloaded_path.name}")
+        log(f".download API fallback sent in chat {event.chat_id}: {media_url}")
     except FileNotFoundError:
         await status.edit(tg_code("Python executable was not found"))
-    except subprocess.CalledProcessError as e:
-        error = (e.stderr or e.stdout or "unknown yt-dlp error").strip().splitlines()[-1:]
-        await status.edit(tg_code(f"Download failed: {error[0] if error else 'unknown yt-dlp error'}"))
     except Exception as e:
-        await status.edit(tg_code(f"Download failed: {e}"))
+        detail = f"yt-dlp: {ytdlp_error}\nAPI: {e}" if ytdlp_error else str(e)
+        await status.edit(tg_code(f"Download failed:\n{detail}"))
     finally:
         if not keep_files:
             if downloaded_path:
@@ -1143,6 +1413,499 @@ async def quote_message(event, raw_options=""):
             cleanup_files(*generated_paths)
 
 
+def export_media_label(message):
+    media = getattr(message, "media", None)
+
+    if not media:
+        return ""
+
+    media_name = type(media).__name__
+
+    if media_name == "MessageMediaWebPage":
+        return ""
+
+    if media_name == "MessageMediaPhoto":
+        return "Photo"
+
+    if media_name == "MessageMediaPoll":
+        return "Poll"
+
+    if media_name in {"MessageMediaGeo", "MessageMediaGeoLive", "MessageMediaVenue"}:
+        return "Location"
+
+    if media_name == "MessageMediaContact":
+        return "Contact"
+
+    if media_name == "MessageMediaDocument":
+        document = getattr(media, "document", None)
+        attributes = getattr(document, "attributes", None) or []
+
+        for attribute in attributes:
+            attr_name = type(attribute).__name__
+
+            if attr_name == "DocumentAttributeSticker":
+                return "Sticker"
+
+            if attr_name == "DocumentAttributeAnimated":
+                return "GIF"
+
+            if attr_name == "DocumentAttributeVideo":
+                if getattr(attribute, "round_message", False):
+                    return "Video message"
+                return "Video"
+
+            if attr_name == "DocumentAttributeAudio":
+                if getattr(attribute, "voice", False):
+                    return "Voice message"
+                return "Audio"
+
+        return "Document"
+
+    return "Media"
+
+
+def message_topic_value(message):
+    reply_header = getattr(message, "reply_to", None)
+
+    if not reply_header:
+        return None
+
+    return getattr(reply_header, "reply_to_top_id", None) or getattr(reply_header, "reply_to_msg_id", None)
+
+
+def message_matches_topic(message, selected_topic):
+    if not selected_topic:
+        return True
+
+    return message.id == selected_topic or message_topic_value(message) == selected_topic
+
+
+def safe_export_filename(title):
+    safe = re.sub(r"[^a-zA-Z0-9_.-]+", "-", title.strip())[:70].strip("-.")
+
+    if not safe:
+        safe = "chat"
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return f"{safe}-{stamp}.html"
+
+
+def export_target_from_text(raw_target, default_chat_id):
+    target_text = raw_target.strip().split(maxsplit=1)[0] if raw_target.strip() else ""
+
+    if not target_text:
+        return default_chat_id, ""
+
+    try:
+        return int(target_text), target_text
+    except ValueError:
+        return target_text, target_text
+
+
+def export_key(chat_id, selected_topic=None):
+    return chat_id, selected_topic
+
+
+def export_message_text(message):
+    text = (message.raw_text or "").strip()
+
+    if text:
+        return text
+
+    media = export_media_label(message)
+
+    if media:
+        return f"[{media}]"
+
+    if getattr(message, "action", None):
+        return "[service message]"
+
+    return ""
+
+
+def build_chat_export_html(chat_title, scope_title, messages, users):
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    total_messages = len(messages)
+    total_users = len(users)
+    user_items = []
+
+    for user_id, user in sorted(users.items(), key=lambda item: (-item[1]["count"], item[1]["name"].lower())):
+        username = f"@{user['username']}" if user.get("username") else "No username"
+        search_text = f"{user['name']} {username}".lower()
+        user_items.append(
+            "<button class=\"user-item\" type=\"button\" "
+            f"data-user=\"{html.escape(str(user_id), quote=True)}\" "
+            f"data-search=\"{html.escape(search_text, quote=True)}\">"
+            "<span>"
+            f"<b>{html.escape(user['name'])}</b>"
+            f"<small>{html.escape(username)}</small>"
+            "</span>"
+            f"<em>{user['count']}</em>"
+            "</button>"
+        )
+
+    data_items = []
+
+    for item in messages:
+        date_value = item["date"].strftime("%Y-%m-%d") if item.get("date") else "Unknown date"
+        time_value = item["date"].strftime("%H:%M") if item.get("date") else "--:--"
+        username = item.get("username") or ""
+        search_text = f"{item['author']} {username} {item['text']}".lower()
+        data_items.append({
+            "date": date_value,
+            "time": time_value,
+            "author": item["author"],
+            "username": username,
+            "text": item["text"],
+            "user_id": str(item.get("user_id") or ""),
+            "search": search_text,
+        })
+
+    users_html = "".join(user_items) or '<p class="empty">No users found.</p>' 
+    data_json = json.dumps(data_items, ensure_ascii=False).replace("</", "<\\/")
+    initial_rows = []
+    last_initial_date = ""
+
+    for item in data_items[:300]:
+        if item["date"] != last_initial_date:
+            initial_rows.append(f'<div class="day">{html.escape(item["date"])}</div>')
+            last_initial_date = item["date"]
+
+        username_html = f"<span>{html.escape(item['username'])}</span>" if item.get("username") else ""
+        initial_rows.append(
+            '<article class="message">'
+            '<div class="message-top">' 
+            f"<strong>{html.escape(item['author'])}</strong>"
+            f"{username_html}"
+            f"<time>{html.escape(item['time'])}</time>"
+            "</div>"
+            f"<p>{html.escape(item['text']).replace(chr(10), '<br>')}</p>"
+            "</article>"
+        )
+
+    initial_messages_html = "".join(initial_rows) or '<p class="empty">No messages found.</p>' 
+    return """<!doctype html>
+<html lang=\"en\">
+<head>
+<meta charset=\"utf-8\">
+<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+<title>{title} export</title>
+<style>
+:root {{ color-scheme: dark; }}
+* {{ box-sizing: border-box; }}
+body {{ margin: 0; background: rgb(8, 10, 12); color: rgb(232, 235, 239); font-family: Arial, Helvetica, sans-serif; }}
+header {{ background: rgb(0, 0, 0); color: white; padding: 24px 28px; border-bottom: 1px solid rgb(35, 39, 45); position: sticky; top: 0; z-index: 5; }}
+header h1 {{ margin: 0 0 8px; font-size: 26px; font-weight: 700; }}
+header p {{ margin: 0; color: rgb(155, 163, 175); }}
+.layout {{ display: grid; grid-template-columns: 320px minmax(0, 1fr); min-height: calc(100vh - 86px); }}
+aside {{ border-right: 1px solid rgb(35, 39, 45); background: rgb(11, 13, 16); padding: 18px; position: sticky; top: 86px; height: calc(100vh - 86px); overflow: auto; }}
+main {{ min-width: 0; padding: 24px 24px 48px; }}
+.summary {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }}
+.summary div {{ background: rgb(17, 20, 24); border: 1px solid rgb(40, 45, 52); border-radius: 8px; padding: 16px; }}
+.summary b {{ display: block; font-size: 24px; margin-bottom: 4px; }}
+.search {{ width: 100%; border: 1px solid rgb(48, 54, 62); background: rgb(17, 20, 24); color: rgb(232, 235, 239); border-radius: 8px; padding: 11px 12px; outline: none; margin-bottom: 12px; }}
+.search:focus {{ border-color: rgb(91, 188, 255); }}
+.user-list {{ display: grid; gap: 8px; }}
+.user-item {{ width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid rgb(40, 45, 52); background: rgb(17, 20, 24); color: inherit; border-radius: 8px; padding: 10px 11px; cursor: pointer; text-align: left; }}
+.user-item:hover, .user-item.active {{ border-color: rgb(91, 188, 255); background: rgb(20, 27, 34); }}
+.user-item span {{ min-width: 0; }}
+.user-item b, .user-item small {{ display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+.user-item small {{ color: rgb(148, 158, 170); margin-top: 3px; }}
+.user-item em {{ color: rgb(155, 163, 175); font-style: normal; font-size: 13px; }}
+.user-item.hidden {{ display: none; }}
+.filter-all {{ margin-bottom: 12px; }}
+.results {{ color: rgb(155, 163, 175); margin: 0 0 14px; font-size: 13px; }}
+.day {{ color: rgb(155, 163, 175); font-size: 13px; font-weight: 700; margin: 20px 0 10px; }}
+.message {{ background: rgb(17, 20, 24); border: 1px solid rgb(40, 45, 52); border-radius: 8px; padding: 14px 16px; margin-bottom: 10px; }}
+.message-top {{ display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }}
+.message-top strong {{ color: rgb(91, 188, 255); }}
+.message-top span {{ color: rgb(148, 158, 170); font-size: 13px; }}
+.message-top time {{ margin-left: auto; color: rgb(132, 141, 153); font-size: 12px; }}
+.message p {{ margin: 9px 0 0; line-height: 1.45; white-space: normal; overflow-wrap: anywhere; }}
+.controls {{ display: flex; gap: 10px; align-items: center; margin: 14px 0 0; }}
+.controls button {{ border: 1px solid rgb(48, 54, 62); background: rgb(17, 20, 24); color: rgb(232, 235, 239); border-radius: 8px; padding: 10px 12px; cursor: pointer; }}
+.controls button:disabled {{ opacity: 0.45; cursor: default; }}
+.empty {{ padding: 18px; color: rgb(155, 163, 175); }}
+@media (max-width: 850px) {{ header {{ position: static; }} .layout {{ grid-template-columns: 1fr; }} aside {{ position: static; height: auto; border-right: 0; border-bottom: 1px solid rgb(35, 39, 45); }} .summary {{ grid-template-columns: 1fr; }} .message-top time {{ margin-left: 0; }} }}
+</style>
+</head>
+<body>
+<header>
+<h1>{heading}</h1>
+<p>{scope} - exported at {generated}</p>
+</header>
+<div class=\"layout\">
+<aside>
+<input id=\"search\" class=\"search\" type=\"search\" placeholder=\"Search users or messages\" autocomplete=\"off\">
+<button id=\"allUsers\" class=\"user-item filter-all active\" type=\"button\" data-user=\"\"><span><b>All users</b><small>Full export</small></span><em>{total_messages}</em></button>
+<div id=\"users\" class=\"user-list\">{users_html}</div>
+</aside>
+<main>
+<section class=\"summary\">
+<div><b>{total_messages}</b><span>messages</span></div>
+<div><b>{total_users}</b><span>users</span></div>
+<div><b>{scope}</b><span>scope</span></div>
+</section>
+<p id=\"results\" class=\"results\"></p>
+<section id=\"messages\">{initial_messages_html}</section>
+<div class=\"controls\"><button id=\"prevPage\" type=\"button\">Previous</button><button id=\"nextPage\" type=\"button\">Next</button></div>
+</main>
+</div>
+<script id=\"exportData\" type=\"application/json\">{data_json}</script>
+<script>
+const allMessages = JSON.parse(document.getElementById('exportData').textContent);
+const pageSize = 300;
+const search = document.getElementById('search');
+const resultText = document.getElementById('results');
+const messagesEl = document.getElementById('messages');
+const prevPage = document.getElementById('prevPage');
+const nextPage = document.getElementById('nextPage');
+const userButtons = Array.from(document.querySelectorAll('.user-item'));
+let selectedUser = '';
+let currentPage = 0;
+let filtered = allMessages;
+function normalize(value) {{ return (value || '').toLowerCase().trim(); }}
+function escapeHtml(value) {{ return String(value).replace(/[&<>\"']/g, char => ({{'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}}[char])); }}
+function applyFilters() {{
+  const query = normalize(search.value);
+  userButtons.forEach(button => {{
+    const isAll = button.dataset.user === '';
+    const matches = isAll || !query || normalize(button.dataset.search).includes(query);
+    button.classList.toggle('hidden', !matches);
+    button.classList.toggle('active', button.dataset.user === selectedUser);
+  }});
+  filtered = allMessages.filter(message => {{
+    const userMatch = !selectedUser || message.user_id === selectedUser;
+    const textMatch = !query || normalize(message.search).includes(query);
+    return userMatch && textMatch;
+  }});
+  currentPage = 0;
+  renderPage();
+}}
+function renderPage() {{
+  const start = currentPage * pageSize;
+  const page = filtered.slice(start, start + pageSize);
+  let html = '';
+  let lastDate = '';
+  for (const message of page) {{
+    if (message.date !== lastDate) {{ html += `<div class=\"day\">${{escapeHtml(message.date)}}</div>`; lastDate = message.date; }}
+    const username = message.username ? `<span>${{escapeHtml(message.username)}}</span>` : '';
+    html += `<article class=\"message\"><div class=\"message-top\"><strong>${{escapeHtml(message.author)}}</strong>${{username}}<time>${{escapeHtml(message.time)}}</time></div><p>${{escapeHtml(message.text).replace(/\n/g, '<br>')}}</p></article>`;
+  }}
+  messagesEl.innerHTML = html || '<p class=\"empty\">No messages found.</p>';
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  resultText.textContent = `${{filtered.length}} messages · page ${{currentPage + 1}}/${{totalPages}}`;
+  prevPage.disabled = currentPage === 0;
+  nextPage.disabled = currentPage >= totalPages - 1;
+}}
+userButtons.forEach(button => button.addEventListener('click', () => {{ selectedUser = button.dataset.user || ''; applyFilters(); }}));
+search.addEventListener('input', applyFilters);
+prevPage.addEventListener('click', () => {{ if (currentPage > 0) {{ currentPage -= 1; renderPage(); }} }});
+nextPage.addEventListener('click', () => {{ if ((currentPage + 1) * pageSize < filtered.length) {{ currentPage += 1; renderPage(); }} }});
+applyFilters();
+</script>
+</body>
+</html>
+""".format(
+        title=html.escape(chat_title),
+        heading=html.escape(chat_title),
+        scope=html.escape(scope_title),
+        generated=html.escape(generated_at),
+        total_messages=total_messages,
+        total_users=total_users,
+        users_html=users_html,
+        data_json=data_json,
+        initial_messages_html=initial_messages_html,
+    )
+
+
+async def iter_export_messages(chat, selected_topic=None):
+    if selected_topic:
+        try:
+            async for message in client.iter_messages(chat, reverse=True, reply_to=selected_topic, wait_time=0):
+                yield message
+            return
+        except Exception:
+            pass
+
+    async for message in client.iter_messages(chat, reverse=True, wait_time=0):
+        if message_matches_topic(message, selected_topic):
+            yield message
+
+
+async def export_chat_html(event, raw_target=""):
+    target, target_text = export_target_from_text(raw_target, event.chat_id)
+    selected_topic = topic_id(event) if not target_text else None
+    status = await event.reply(tg_code("Exporting chat..."))
+
+    try:
+        chat = await client.get_entity(target)
+        active_key = export_key(getattr(chat, "id", target), selected_topic)
+        previous_stop = ACTIVE_EXPORTS.get(active_key)
+
+        if previous_stop:
+            previous_stop.set()
+
+        stop_event = asyncio.Event()
+        ACTIVE_EXPORTS[active_key] = stop_event
+        chat_title = display_name(chat, str(target))
+        scope_title = f"topic {selected_topic}" if selected_topic else "full chat"
+        messages = []
+        users = {}
+        sender_cache = {}
+
+        async for message in iter_export_messages(chat, selected_topic):
+            if stop_event.is_set():
+                await status.edit(tg_code(f"Export cancelled after {len(messages)} messages."))
+                return
+
+            sender_id = getattr(message, "sender_id", None) or 0
+
+            if sender_id not in sender_cache:
+                sender = getattr(message, "sender", None)
+
+                if sender is None:
+                    try:
+                        sender = await message.get_sender()
+                    except Exception:
+                        sender = None
+
+                sender_cache[sender_id] = sender
+
+            sender = sender_cache.get(sender_id)
+            author = display_name(sender, "Unknown")
+            username = getattr(sender, "username", None) or ""
+            text = export_message_text(message)
+
+            if not text:
+                continue
+
+            if sender_id not in users:
+                users[sender_id] = {"name": author, "username": username, "count": 0}
+
+            users[sender_id]["count"] += 1
+            messages.append({
+                "date": getattr(message, "date", None),
+                "author": author,
+                "username": f"@{username}" if username else "",
+                "text": text,
+                "user_id": sender_id,
+            })
+
+            if len(messages) % 2000 == 0:
+                await status.edit(tg_code(f"Exporting chat... {len(messages)} messages"))
+
+        content = build_chat_export_html(chat_title, scope_title, messages, users)
+        filename = safe_export_filename(chat_title)
+
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".html", delete=False) as tmp:
+            tmp.write(content)
+            tmp_path = Path(tmp.name)
+
+        final_path = tmp_path.with_name(filename)
+        tmp_path.replace(final_path)
+
+        try:
+            await client.send_file(
+                event.chat_id,
+                str(final_path),
+                caption=f"Export: {chat_title} ({len(messages)} messages)",
+                reply_to=getattr(getattr(event, "message", None), "id", None),
+                force_document=True,
+            )
+        finally:
+            cleanup_files(final_path)
+
+        await status.delete()
+        log(f".exportchat exported {len(messages)} messages from {chat_title}")
+    except Exception as e:
+        await status.edit(tg_code(f"Export failed:\n{e}"))
+
+    finally:
+        if "active_key" in locals() and "stop_event" in locals() and ACTIVE_EXPORTS.get(active_key) is stop_event:
+            ACTIVE_EXPORTS.pop(active_key, None)
+
+
+async def cancel_chat_export(event, raw_target=""):
+    target, target_text = export_target_from_text(raw_target, event.chat_id)
+    selected_topic = topic_id(event) if not target_text else None
+    stop_events = []
+
+    try:
+        chat = await client.get_entity(target)
+        active_key = export_key(getattr(chat, "id", target), selected_topic)
+        stop_event = ACTIVE_EXPORTS.get(active_key)
+
+        if stop_event:
+            stop_events.append(stop_event)
+        elif not selected_topic:
+            target_id = getattr(chat, "id", target)
+            stop_events.extend(
+                active_stop
+                for (chat_id, _), active_stop in ACTIVE_EXPORTS.items()
+                if chat_id == target_id
+            )
+    except Exception:
+        stop_event = ACTIVE_EXPORTS.get(export_key(event.chat_id, selected_topic))
+
+        if stop_event:
+            stop_events.append(stop_event)
+
+    if stop_events:
+        for stop_event in stop_events:
+            stop_event.set()
+        await event.reply(tg_code("Export cancel requested."))
+    else:
+        await event.reply(tg_code("No export running in this chat/topic."))
+
+
+async def clear_own_messages(event):
+    selected_topic = topic_id(event)
+    chat_id = event.chat_id
+    deleted = 0
+    batch = []
+
+    async def flush_batch():
+        nonlocal deleted, batch
+
+        if not batch:
+            return
+
+        current = batch
+        batch = []
+        await client.delete_messages(chat_id, current, revoke=True)
+        deleted += len(current)
+
+    async def scan_messages(use_topic_filter):
+        kwargs = {"from_user": "me"}
+
+        if use_topic_filter and selected_topic:
+            kwargs["reply_to"] = selected_topic
+
+        async for message in client.iter_messages(chat_id, **kwargs):
+            if selected_topic and not use_topic_filter and not message_matches_topic(message, selected_topic):
+                continue
+
+            batch.append(message.id)
+
+            if len(batch) >= 100:
+                await flush_batch()
+
+    try:
+        try:
+            await scan_messages(use_topic_filter=True)
+        except Exception:
+            batch.clear()
+            await scan_messages(use_topic_filter=False)
+
+        await flush_batch()
+        scope = f"topic {selected_topic}" if selected_topic else "chat"
+        await client.send_message("me", tg_code(f".cl deleted {deleted} messages from {scope} {chat_id}"))
+        log(f".cl deleted {deleted} messages in chat {chat_id}")
+    except Exception as e:
+        await client.send_message("me", tg_code(f".cl failed in chat {chat_id}:\n{e}"))
+
+
 async def handle_telegram_terminal(event):
     name, _ = parse_command(event.raw_text, TERMINAL_PREFIX)
 
@@ -1218,8 +1981,16 @@ async def handler(event):
         await clean_url_message(event, rest)
     elif name == "download":
         await download_link(event, rest)
+    elif name in NAYAN_ENDPOINTS:
+        await nayan_download_link(event, rest, name)
     elif name == "144p":
         await send_media_144p(event, rest)
+    elif name == "exportchat":
+        await export_chat_html(event, rest)
+    elif name == "cancelexport":
+        await cancel_chat_export(event, rest)
+    elif name == "cl":
+        await clear_own_messages(event)
     elif name == "unspam":
         active_key = spam_key(event)
         stop_events = []
