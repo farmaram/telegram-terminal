@@ -133,7 +133,18 @@ Media
 .144p                 reply to media and send a low quality version
 ```
 
-Generated `.q`, `.144p`, `.download`, and API shortcut fallback files are deleted after they are sent to Telegram.
+Chat
+
+```text
+.exportchat           export current chat/topic as HTML
+.exportchat ID/@user  export another chat as HTML
+.cancelexport         stop export in this chat/topic
+.cl                   delete your messages in this chat/topic
+```
+
+`.exportchat` creates a dark HTML archive with messages grouped by day, a user menu, and search/filter controls. It works in normal groups and topic groups.
+
+Generated `.q`, `.144p`, `.download`, `.exportchat`, and API shortcut fallback files are deleted after they are sent to Telegram.
 
 ## Telegram Terminal
 
