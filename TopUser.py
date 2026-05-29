@@ -10,10 +10,15 @@ import shutil
 import tempfile
 import textwrap
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
+
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
 from telethon import TelegramClient, events
@@ -113,6 +118,22 @@ AVATAR_CACHE = {}
 ACTIVE_SPAMS = {}
 ACTIVE_EXPORTS = {}
 EXPORT_AVATAR_CACHE = {}
+
+try:
+    BRASILIA_TZ = ZoneInfo("America/Sao_Paulo") if ZoneInfo else timezone(timedelta(hours=-3))
+except Exception:
+    BRASILIA_TZ = timezone(timedelta(hours=-3))
+
+
+def brasilia_datetime(value=None):
+    if value is None:
+        value = datetime.now(timezone.utc)
+    elif value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+
+    return value.astimezone(BRASILIA_TZ)
+
+
 VEGADATA_CHANNEL_ID = "UCd2FHKnQ3ymrNhdsV9J0VmA"
 VEGADATA_CHANNEL_URL = "https://youtube.com/@vegadata"
 VEGADATA_COUNTER_URL = f"https://mixerno.space/api/youtube-channel-counter/user/{VEGADATA_CHANNEL_ID}"
@@ -698,7 +719,7 @@ def render_vegadata_card(stats):
     draw.text((right_x, 124), "INSCRITOS", font=label_font, fill=(255, 74, 74, 255))
     draw.text((right_x, 163), compact_stat(stats.get("subscribers")), font=big_font, fill=(255, 255, 255, 255))
 
-    updated = datetime.now().strftime("%d/%m/%Y %H:%M")
+    updated = brasilia_datetime().strftime("%d/%m/%Y %H:%M")
     draw.text((right_x, 300), f"Atualizado em {updated}", font=small_font, fill=(139, 145, 158, 255))
 
     y = 472
@@ -1553,7 +1574,7 @@ def author_color(name):
     return colors[sum(name.encode("utf-8", errors="ignore")) % len(colors)]
 
 
-def quote_bubble_image(author, text, avatar, media_image=None):
+def quote_bubble_image(author, text, avatar, media_image=None, message_date=None):
     name_font = load_quote_font(34, bold=True)
     text_font = load_quote_font(38)
     time_font = load_quote_font(22)
@@ -1634,7 +1655,7 @@ def quote_bubble_image(author, text, avatar, media_image=None):
         draw.multiline_text((x, y), wrapped, font=text_font, fill=(246, 247, 249, 255), spacing=line_spacing)
         y += text_h + text_gap
 
-    timestamp = datetime.now().strftime("%H:%M")
+    timestamp = brasilia_datetime(message_date).strftime("%H:%M")
     time_w, time_h = text_size(measure, timestamp, time_font)
     draw.text(
         (bubble_x + bubble_w - time_w - 24, bubble_y + bubble_h - time_h - 16),
@@ -1645,13 +1666,14 @@ def quote_bubble_image(author, text, avatar, media_image=None):
 
     return image
 
-def create_quote_image(author, text, avatar, media_image=None):
+def create_quote_image(author, text, avatar, media_image=None, message_date=None):
     return create_quote_stack([
         {
             "author": author,
             "text": text,
             "avatar": avatar,
             "media_image": media_image,
+            "date": message_date,
         }
     ])
 
@@ -1664,6 +1686,7 @@ def create_quote_stack(items):
             item["text"],
             item["avatar"],
             item.get("media_image"),
+            item.get("date"),
         )
         for item in items
     ]
@@ -1784,6 +1807,7 @@ async def build_quote_item(message, text_override=None, include_media=True):
         "text": text,
         "avatar": avatar,
         "media_image": media_image,
+        "date": getattr(message, "date", None),
     }
 
 
@@ -1816,7 +1840,7 @@ async def quote_message(event, raw_options=""):
         sender = await event.get_sender()
         author = display_name(sender)
         avatar = await get_sender_avatar(sender, author)
-        png_path = create_quote_image(author, custom_text, avatar)
+        png_path = create_quote_image(author, custom_text, avatar, message_date=getattr(getattr(event, "message", None), "date", None))
     elif reply:
         selected_text = selected_reply_quote_text(event)
 
@@ -1970,7 +1994,7 @@ def export_initials(name):
     return "".join(part[0].upper() for part in parts[:2])[:2]
 
 def build_chat_export_html(chat_title, scope_title, messages, users):
-    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    generated_at = brasilia_datetime().strftime("%Y-%m-%d %H:%M:%S")
     total_messages = len(messages)
     total_users = len(users)
     user_items = []
@@ -1998,13 +2022,13 @@ def build_chat_export_html(chat_title, scope_title, messages, users):
     last_day = None
 
     for item in messages:
-        day = item["date"].strftime("%Y-%m-%d") if item.get("date") else "Unknown date"
+        day = brasilia_datetime(item["date"]).strftime("%Y-%m-%d") if item.get("date") else "Unknown date"
 
         if day != last_day:
             message_rows.append(f"<div class=\"day\" data-day=\"1\">{html.escape(day)}</div>")
             last_day = day
 
-        when = item["date"].strftime("%H:%M") if item.get("date") else "--:--"
+        when = brasilia_datetime(item["date"]).strftime("%H:%M") if item.get("date") else "--:--"
         author = html.escape(item["author"])
         body = html.escape(item["text"]).replace("\n", "<br>")
         username = html.escape(item.get("username") or "")
@@ -2079,7 +2103,7 @@ main {{ min-width: 0; padding: 18px 16px 46px; background: radial-gradient(circl
 .message time {{ float: right; color: rgb(121, 145, 164); font-size: 11px; margin: 5px 0 0 12px; }}
 .message p {{ margin: 0; line-height: 1.38; white-space: normal; overflow-wrap: anywhere; font-size: 14px; }}
 .empty {{ max-width: 860px; margin: 0 auto; padding: 18px; color: rgb(143, 161, 176); }}
-@media (max-width: 850px) {{ header {{ position: static; }} .topbar {{ grid-template-columns: 1fr; gap: 10px; }} .layout {{ grid-template-columns: 1fr; }} aside {{ position: static; height: auto; border-right: 0; border-bottom: 1px solid rgb(15, 23, 32); }} main {{ padding: 14px 10px 34px; }} .summary {{ grid-template-columns: 1fr; }} .bubble {{ max-width: calc(100vw - 72px); }} }}
+@media (max-width: 850px) {{ .topbar {{ grid-template-columns: 1fr; gap: 10px; }} .layout {{ grid-template-columns: 1fr; }} aside {{ position: static; height: auto; border-right: 0; border-bottom: 1px solid rgb(15, 23, 32); }} main {{ padding: 14px 10px 34px; }} .summary {{ grid-template-columns: 1fr; }} .bubble {{ max-width: calc(100vw - 72px); }} }}
 </style>
 </head>
 <body>
@@ -2089,7 +2113,7 @@ main {{ min-width: 0; padding: 18px 16px 46px; background: radial-gradient(circl
 <h1>{heading}</h1>
 <p>{scope} - {total_messages} messages - {total_users} users - exported at {generated}</p>
 </div>
-<input id=\"search\" class=\"search\" type=\"search\" placeholder=\"Search users or messages\" autocomplete=\"off\">
+<input id=\"search\" class=\"search\" type=\"search\" placeholder=\"Search users, @username or messages\" autocomplete=\"off\">
 </div>
 </header>
 <div class=\"layout\">
