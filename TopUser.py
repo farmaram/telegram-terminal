@@ -1084,7 +1084,7 @@ def parse_download_url(raw):
 
 
 NAYAN_API_BASE = "https://nayan-video-downloader.vercel.app"
-NAYAN_AUDIO_COMMANDS = {"soundcloud", "sc"}
+NAYAN_AUDIO_COMMANDS = {"soundcloud", "sc", "spotify", "spotifydl"}
 
 NAYAN_ENDPOINTS = {
     "api": "alldown",
@@ -1111,6 +1111,8 @@ NAYAN_ENDPOINTS = {
     "pinterest": "pintarest",
     "soundcloud": "soundcloud",
     "sc": "soundcloud",
+    "spotify": "alldown",
+    "spotifydl": "alldown",
     "terabox": "terabox",
     "tera": "terabox",
     "gdrive": "GDLink",
@@ -1145,12 +1147,23 @@ def nayan_endpoint_for_url(command_name, video_url):
         return "capcut"
     if host_matches(host, "soundcloud.com"):
         return "soundcloud"
+    if host_matches(host, "spotify.com"):
+        return "alldown"
     if host_matches(host, "terabox.com"):
         return "terabox"
     if host_matches(host, "drive.google.com"):
         return "GDLink"
 
     return endpoint
+
+
+def nayan_audio_first_url(video_url):
+    host = clean_host(urlsplit(video_url).netloc)
+    return (
+        host_matches(host, "music.youtube.com")
+        or host_matches(host, "soundcloud.com")
+        or host_matches(host, "spotify.com")
+    )
 
 
 def nayan_api_url(endpoint, video_url):
@@ -1187,6 +1200,9 @@ def nayan_endpoint_candidates(command_name, video_url):
     elif primary == "youtube":
         candidates.append("ytdown")
 
+    if command_name in {"spotify", "spotifydl"}:
+        candidates.append("spotify")
+
     candidates.append("alldown")
     unique = []
 
@@ -1201,7 +1217,11 @@ def fetch_nayan_audio_response(command_name, video_url):
     last_data = None
 
     for endpoint in nayan_endpoint_candidates(command_name, video_url):
-        data = fetch_nayan_response(endpoint, video_url)
+        try:
+            data = fetch_nayan_response(endpoint, video_url)
+        except Exception:
+            continue
+
         last_data = data
 
         if nayan_best_audio_url(data):
@@ -1271,11 +1291,15 @@ def collect_audio_urls(value, parent_key=""):
         text = value.strip()
 
         if text.startswith(("http://", "https://")):
-            lower = text.lower().split("?", 1)[0]
+            lower_full = text.lower()
+            lower = lower_full.split("?", 1)[0]
             key = parent_key.lower()
             score = 0
 
             if lower.endswith((".mp3", ".m4a", ".aac", ".ogg", ".wav", ".opus")):
+                score += 10
+
+            if any(marker in lower_full for marker in ("mime=audio", "mime%3daudio", "type=audio", "audio/")):
                 score += 10
 
             if any(word in key for word in ("audio", "music", "mp3", "sound", "song", "m4a", "opus")):
@@ -1287,7 +1311,10 @@ def collect_audio_urls(value, parent_key=""):
             if lower.endswith((".mp4", ".mov", ".webm", ".mkv")):
                 score -= 6
 
-            if any(word in key or word in lower for word in ("thumb", "cover", "image", "photo", "avatar", "video")):
+            if any(word in key or word in lower for word in ("thumb", "cover", "image", "photo", "avatar")):
+                score -= 4
+
+            if "video" in key:
                 score -= 4
 
             if score > 0:
@@ -1518,7 +1545,7 @@ def download_remote_media(url, output_dir, filename="video.mp4"):
 
 async def nayan_download_link(event, raw_options="", command_name="video"):
     args = (raw_options or "").split()
-    audio_mode = command_name in NAYAN_AUDIO_COMMANDS or any(arg.lower() in {"mp3", "audio", "music"} for arg in args)
+    requested_audio = command_name in NAYAN_AUDIO_COMMANDS or any(arg.lower() in {"mp3", "audio", "music"} for arg in args)
     cleaned_options = " ".join(arg for arg in args if arg.lower() not in {"mp3", "audio", "music"})
     url = parse_download_url(cleaned_options)
 
@@ -1530,6 +1557,7 @@ async def nayan_download_link(event, raw_options="", command_name="video"):
         await event.reply(tg_code(f"Use: .{command_name} [mp3] URL, or reply to a message with URL"))
         return
 
+    audio_mode = requested_audio or nayan_audio_first_url(url)
     endpoint = nayan_endpoint_for_url(command_name, url)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     output_dir = DOWNLOAD_DIR / f"nayan-{stamp}"
@@ -2832,8 +2860,6 @@ async def handler(event):
         await download_link(event, rest)
     elif name == "mp3":
         await download_mp3(event, rest)
-    elif name in {"spotify", "spotifydl"}:
-        await event.reply(tg_code("Spotify is not returning downloadable links from the Nayan API right now."))
     elif name in NAYAN_ENDPOINTS:
         await nayan_download_link(event, rest, name)
     elif name == "144p":
