@@ -6,7 +6,9 @@ import types
 import os
 import subprocess
 import re
+import shlex
 import shutil
+import sys
 import tempfile
 import textwrap
 import urllib.request
@@ -26,8 +28,8 @@ from telethon import TelegramClient, events
 from telethon.tl import functions
 from telethon.tl.types import DocumentAttributeSticker, DocumentAttributeVideo, InputStickerSetEmpty
 
-api_id = int(os.environ.get("TG_API_ID", "123456"))
-api_hash = os.environ.get("TG_API_HASH", "your_api_hash")
+api_id = int(sys.argv[1] if len(sys.argv) > 1 else os.environ.get("TG_API_ID", "123456"))
+api_hash = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("TG_API_HASH", "your_api_hash")
 
 SESSION_NAME = "personal_userbot"
 COMMAND_PREFIX = "."
@@ -2680,6 +2682,167 @@ async def handler(event):
         await quote_message(event, rest)
 
 
+CLI_HELP = """TopUser local CLI
+  .help                         show this help
+  .me                           show logged account
+  .dialogs [N]                  list recent chats, default 20
+  .say <text> <chat>            send text to chat/user/group
+  .say <chat> <text>            same, when chat is the first argument
+  .shell <command>              run local shell command
+  !<command>                    shortcut for .shell
+  exit | quit                   disconnect and close
+
+chat can be an id, -100 group/channel id, @username, me, or saved.
+Examples:
+  .say oi 123456789
+  .say -1001234567890 salve grupo
+  .say @username oi
+"""
+
+
+def normalize_cli_chat(value):
+    value = value.strip().strip("()[]{}")
+
+    if value.lower() in {"me", "saved", "savedmessages"}:
+        return "me"
+
+    if re.fullmatch(r"-?\d+", value):
+        return int(value)
+
+    return value
+
+
+def looks_like_chat_token(value):
+    value = value.strip().strip("()[]{}")
+    lowered = value.lower()
+    return (
+        lowered in {"me", "saved", "savedmessages"}
+        or value.startswith("@")
+        or re.fullmatch(r"-?\d+", value) is not None
+    )
+
+
+def parse_cli_say_args(raw):
+    try:
+        parts = shlex.split(raw)
+    except ValueError:
+        parts = raw.split()
+
+    if len(parts) < 2:
+        raise ValueError("Use: .say <text> <chat> or .say <chat> <text>")
+
+    if looks_like_chat_token(parts[0]):
+        chat = normalize_cli_chat(parts[0])
+        text = " ".join(parts[1:]).strip()
+    else:
+        chat = normalize_cli_chat(parts[-1])
+        text = " ".join(parts[:-1]).strip()
+
+    if not text:
+        raise ValueError("Message text is empty.")
+
+    return chat, text
+
+
+async def run_local_shell(command):
+    if not command.strip():
+        return "Use: .shell <command>"
+
+    process = await asyncio.create_subprocess_shell(
+        command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+
+    try:
+        output, _ = await asyncio.wait_for(process.communicate(), timeout=60)
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.communicate()
+        return "Command timed out after 60 seconds."
+
+    text = output.decode("utf-8", errors="replace").rstrip()
+    if not text:
+        text = f"Command finished with exit code {process.returncode}."
+    elif len(text) > 4000:
+        text = text[-4000:]
+
+    return text
+
+
+async def print_dialogs(limit_text=""):
+    try:
+        limit = int(limit_text.strip()) if limit_text.strip() else 20
+    except ValueError:
+        limit = 20
+
+    limit = max(1, min(100, limit))
+    rows = []
+
+    async for dialog in client.iter_dialogs(limit=limit):
+        entity = dialog.entity
+        username = getattr(entity, "username", None)
+        username_text = f" @{username}" if username else ""
+        rows.append(f"{dialog.id} | {dialog.name}{username_text}")
+
+    print("\n".join(rows) if rows else "No dialogs found.")
+
+
+async def handle_cli_line(line):
+    line = line.strip()
+
+    if not line:
+        return
+
+    if line.lower() in {"exit", "quit", ".exit", ".quit"}:
+        print("Disconnecting...")
+        await client.disconnect()
+        return
+
+    if line.startswith("!"):
+        print(await run_local_shell(line[1:]))
+        return
+
+    if not line.startswith(COMMAND_PREFIX):
+        print("Use .help for CLI commands.")
+        return
+
+    name, rest = parse_command(line)
+
+    try:
+        if name == "help":
+            print(CLI_HELP)
+        elif name == "me":
+            me = await client.get_me()
+            username = f" @{me.username}" if getattr(me, "username", None) else ""
+            print(f"Logged as: {me.id} | {getattr(me, 'first_name', '') or ''}{username}")
+        elif name == "dialogs":
+            await print_dialogs(rest)
+        elif name == "say":
+            chat, message = parse_cli_say_args(rest)
+            sent = await client.send_message(chat, message)
+            print(f"sent message {sent.id} to {chat}")
+        elif name == "shell":
+            print(await run_local_shell(rest))
+        else:
+            print(f"Unknown CLI command: .{name}. Use .help.")
+    except Exception as e:
+        print(f"CLI error: {e}")
+
+
+async def local_cli_loop():
+    print("Local CLI ready. Use .help, .dialogs, .say, .shell, or exit.")
+
+    while client.is_connected():
+        try:
+            line = await asyncio.to_thread(input, "topuser> ")
+        except (EOFError, KeyboardInterrupt):
+            print("\nCLI closed. Telegram client is still running.")
+            return
+
+        await handle_cli_line(line)
+
+
 async def main():
     keep_online = ask_keep_online()
     print_startup_console()
@@ -2698,6 +2861,7 @@ async def main():
 
     await client.send_message("me", startup_notice_text())
     log("startup notice sent to Saved Messages")
+    asyncio.create_task(local_cli_loop())
     await client.run_until_disconnected()
 
 
