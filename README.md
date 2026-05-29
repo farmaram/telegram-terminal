@@ -138,11 +138,11 @@ Chat
 ```text
 .exportchat           export current chat/topic as HTML
 .exportchat ID/@user  export another chat as HTML
-.cancelexport         stop export in this chat/topic
+.cancelexport         stop export and send partial HTML
 .cl                   delete your messages in this chat/topic
 ```
 
-`.exportchat` creates a dark HTML archive with messages grouped by day, a user menu, and search/filter controls. It works in normal groups and topic groups.
+`.exportchat` creates a dark HTML archive with messages grouped by day, a user menu, and search/filter controls. It works in normal groups and topic groups. `.cancelexport` stops the running export and sends the partial HTML collected so far.
 
 Generated `.q`, `.144p`, `.download`, `.exportchat`, and API shortcut fallback files are deleted after they are sent to Telegram.
 

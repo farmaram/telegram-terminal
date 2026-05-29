@@ -165,7 +165,7 @@ Media
 Chat
   .exportchat           export current chat/topic as HTML
   .exportchat ID/@user export another chat as HTML
-  .cancelexport         stop export in this chat/topic
+  .cancelexport         stop export and send partial HTML
   .cl                   delete your messages in this chat/topic
 
 Files
@@ -2111,6 +2111,31 @@ async def iter_export_messages(chat, selected_topic=None):
             yield message
 
 
+async def send_export_file(event, chat_title, scope_title, messages, users, partial=False):
+    content = build_chat_export_html(chat_title, scope_title, messages, users)
+    filename = safe_export_filename(chat_title)
+
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".html", delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = Path(tmp.name)
+
+    final_path = tmp_path.with_name(filename)
+    tmp_path.replace(final_path)
+
+    caption_prefix = "Partial export" if partial else "Export"
+
+    try:
+        await client.send_file(
+            event.chat_id,
+            str(final_path),
+            caption=f"{caption_prefix}: {chat_title} ({len(messages)} messages)",
+            reply_to=getattr(getattr(event, "message", None), "id", None),
+            force_document=True,
+        )
+    finally:
+        cleanup_files(final_path)
+
+
 async def export_chat_html(event, raw_target=""):
     target, target_text = export_target_from_text(raw_target, event.chat_id)
     selected_topic = topic_id(event) if not target_text else None
@@ -2119,23 +2144,25 @@ async def export_chat_html(event, raw_target=""):
     try:
         chat = await client.get_entity(target)
         active_key = export_key(getattr(chat, "id", target), selected_topic)
-        previous_stop = ACTIVE_EXPORTS.get(active_key)
+        previous_export = ACTIVE_EXPORTS.get(active_key)
 
-        if previous_stop:
+        if previous_export:
+            previous_stop = previous_export.get("stop_event") if isinstance(previous_export, dict) else previous_export
             previous_stop.set()
 
         stop_event = asyncio.Event()
-        ACTIVE_EXPORTS[active_key] = stop_event
+        ACTIVE_EXPORTS[active_key] = {"stop_event": stop_event}
         chat_title = display_name(chat, str(target))
         scope_title = f"topic {selected_topic}" if selected_topic else "full chat"
         messages = []
         users = {}
         sender_cache = {}
+        cancelled = False
 
         async for message in iter_export_messages(chat, selected_topic):
             if stop_event.is_set():
-                await status.edit(tg_code(f"Export cancelled after {len(messages)} messages."))
-                return
+                cancelled = True
+                break
 
             sender_id = getattr(message, "sender_id", None) or 0
 
@@ -2173,35 +2200,28 @@ async def export_chat_html(event, raw_target=""):
             if len(messages) % 2000 == 0:
                 await status.edit(tg_code(f"Exporting chat... {len(messages)} messages"))
 
-        content = build_chat_export_html(chat_title, scope_title, messages, users)
-        filename = safe_export_filename(chat_title)
+        if cancelled:
+            await status.edit(tg_code(f"Export cancelled. Sending partial HTML with {len(messages)} messages..."))
+        else:
+            await status.edit(tg_code(f"Sending export with {len(messages)} messages..."))
 
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".html", delete=False) as tmp:
-            tmp.write(content)
-            tmp_path = Path(tmp.name)
-
-        final_path = tmp_path.with_name(filename)
-        tmp_path.replace(final_path)
-
-        try:
-            await client.send_file(
-                event.chat_id,
-                str(final_path),
-                caption=f"Export: {chat_title} ({len(messages)} messages)",
-                reply_to=getattr(getattr(event, "message", None), "id", None),
-                force_document=True,
-            )
-        finally:
-            cleanup_files(final_path)
-
+        await send_export_file(event, chat_title, scope_title, messages, users, partial=cancelled)
         await status.delete()
-        log(f".exportchat exported {len(messages)} messages from {chat_title}")
+
+        if cancelled:
+            log(f".exportchat sent partial export with {len(messages)} messages from {chat_title}")
+        else:
+            log(f".exportchat exported {len(messages)} messages from {chat_title}")
     except Exception as e:
         await status.edit(tg_code(f"Export failed:\n{e}"))
 
     finally:
-        if "active_key" in locals() and "stop_event" in locals() and ACTIVE_EXPORTS.get(active_key) is stop_event:
-            ACTIVE_EXPORTS.pop(active_key, None)
+        if "active_key" in locals() and "stop_event" in locals():
+            active_export = ACTIVE_EXPORTS.get(active_key)
+            active_stop = active_export.get("stop_event") if isinstance(active_export, dict) else active_export
+
+            if active_stop is stop_event:
+                ACTIVE_EXPORTS.pop(active_key, None)
 
 
 async def cancel_chat_export(event, raw_target=""):
@@ -2212,19 +2232,21 @@ async def cancel_chat_export(event, raw_target=""):
     try:
         chat = await client.get_entity(target)
         active_key = export_key(getattr(chat, "id", target), selected_topic)
-        stop_event = ACTIVE_EXPORTS.get(active_key)
+        active_export = ACTIVE_EXPORTS.get(active_key)
+        stop_event = active_export.get("stop_event") if isinstance(active_export, dict) else active_export
 
         if stop_event:
             stop_events.append(stop_event)
         elif not selected_topic:
             target_id = getattr(chat, "id", target)
             stop_events.extend(
-                active_stop
-                for (chat_id, _), active_stop in ACTIVE_EXPORTS.items()
+                active_export.get("stop_event") if isinstance(active_export, dict) else active_export
+                for (chat_id, _), active_export in ACTIVE_EXPORTS.items()
                 if chat_id == target_id
             )
     except Exception:
-        stop_event = ACTIVE_EXPORTS.get(export_key(event.chat_id, selected_topic))
+        active_export = ACTIVE_EXPORTS.get(export_key(event.chat_id, selected_topic))
+        stop_event = active_export.get("stop_event") if isinstance(active_export, dict) else active_export
 
         if stop_event:
             stop_events.append(stop_event)
@@ -2232,7 +2254,7 @@ async def cancel_chat_export(event, raw_target=""):
     if stop_events:
         for stop_event in stop_events:
             stop_event.set()
-        await event.reply(tg_code("Export cancel requested."))
+        await event.reply(tg_code("Export cancel requested. Partial HTML will be sent when the current batch stops."))
     else:
         await event.reply(tg_code("No export running in this chat/topic."))
 
