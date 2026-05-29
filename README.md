@@ -137,14 +137,15 @@ Chat
 
 ```text
 .exportchat           export current chat/topic as HTML
+.exportchat --media   export HTML plus media/docs as ZIP
 .exportchat ID/@user  export another chat as HTML
 .cancelexport         stop export and send partial HTML
 .cl                   delete your messages in this chat/topic
 ```
 
-`.exportchat` creates a Telegram-style dark HTML archive with chat bubbles, a top search bar, the chat/group name, low-quality user avatars, messages grouped by day, and user filters. It works in normal groups and topic groups. `.cancelexport` stops the running export and immediately sends the partial HTML collected so far.
+`.exportchat` creates a Telegram-style dark HTML archive with chat bubbles, a top search bar, the chat/group name, low-quality user avatars, messages grouped by day, and user filters. Use `.exportchat --media` to receive a ZIP with `index.html` plus downloaded media/docs. It works in normal groups and topic groups. `.cancelexport` stops the running export and immediately sends the partial HTML collected so far.
 
-Generated `.q`, `.144p`, `.download`, `.exportchat`, and API shortcut fallback files are deleted after they are sent to Telegram.
+Generated `.q`, `.144p`, `.download`, `.exportchat` HTML/ZIP, and API shortcut fallback files are deleted after they are sent to Telegram.
 
 ## Telegram Terminal
 

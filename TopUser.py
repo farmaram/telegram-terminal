@@ -10,6 +10,7 @@ import shutil
 import tempfile
 import textwrap
 import urllib.request
+import zipfile
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
@@ -187,7 +188,8 @@ Media
 
 Chat
   .exportchat           export current chat/topic as HTML
-  .exportchat ID/@user export another chat as HTML
+  .exportchat --media   export HTML plus media/docs as ZIP
+  .exportchat ID/@user  export another chat as HTML
   .cancelexport         stop export and send partial HTML
   .cl                   delete your messages in this chat/topic
 
@@ -1942,26 +1944,43 @@ def message_matches_topic(message, selected_topic):
     return message.id == selected_topic or message_topic_value(message) == selected_topic
 
 
-def safe_export_filename(title):
+def safe_export_name(title):
     safe = re.sub(r"[^a-zA-Z0-9_.-]+", "-", title.strip())[:70].strip("-.")
 
     if not safe:
         safe = "chat"
 
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return f"{safe}-{stamp}.html"
+    return f"{safe}-{stamp}"
+
+
+def safe_export_filename(title):
+    return f"{safe_export_name(title)}.html"
+
+
+def parse_export_options(raw_target, default_chat_id):
+    args = (raw_target or "").split()
+    include_media = False
+    target_text = ""
+
+    for arg in args:
+        if arg == "--media":
+            include_media = True
+        elif not target_text:
+            target_text = arg
+
+    if not target_text:
+        return default_chat_id, "", include_media
+
+    try:
+        return int(target_text), target_text, include_media
+    except ValueError:
+        return target_text, target_text, include_media
 
 
 def export_target_from_text(raw_target, default_chat_id):
-    target_text = raw_target.strip().split(maxsplit=1)[0] if raw_target.strip() else ""
-
-    if not target_text:
-        return default_chat_id, ""
-
-    try:
-        return int(target_text), target_text
-    except ValueError:
-        return target_text, target_text
+    target, target_text, _ = parse_export_options(raw_target, default_chat_id)
+    return target, target_text
 
 
 def export_key(chat_id, selected_topic=None):
@@ -1983,6 +2002,50 @@ def export_message_text(message):
         return "[service message]"
 
     return ""
+
+
+def safe_media_filename(message, downloaded_path, label):
+    suffix = Path(downloaded_path).suffix[:12] or ".bin"
+    label = re.sub(r"[^a-zA-Z0-9_.-]+", "-", (label or "media").lower()).strip("-.") or "media"
+    return f"{getattr(message, 'id', 'message')}-{label}{suffix}"
+
+
+async def export_message_media(message, media_dir):
+    label = export_media_label(message)
+
+    if not label or not getattr(message, "media", None):
+        return None
+
+    media_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        downloaded = await message.download_media(file=str(media_dir))
+
+        if not downloaded:
+            return None
+
+        downloaded_path = Path(downloaded)
+
+        if not downloaded_path.is_file():
+            return None
+
+        final_name = safe_media_filename(message, downloaded_path, label)
+        final_path = media_dir / final_name
+
+        if final_path.exists():
+            final_path = media_dir / f"{getattr(message, 'id', 'message')}-{datetime.now().strftime('%H%M%S%f')}{downloaded_path.suffix or '.bin'}"
+
+        if downloaded_path.resolve() != final_path.resolve():
+            downloaded_path.replace(final_path)
+
+        return {
+            "path": f"media/{final_path.name}",
+            "name": final_path.name,
+            "label": label,
+        }
+    except Exception as e:
+        print(f"Export media failed for message {getattr(message, 'id', '?')}: {e}")
+        return None
 
 
 def export_initials(name):
@@ -2031,6 +2094,11 @@ def build_chat_export_html(chat_title, scope_title, messages, users):
         when = brasilia_datetime(item["date"]).strftime("%H:%M") if item.get("date") else "--:--"
         author = html.escape(item["author"])
         body = html.escape(item["text"]).replace("\n", "<br>")
+        media_info = item.get("media") or {}
+        media_path = html.escape(media_info.get("path") or "", quote=True)
+        media_name = html.escape(media_info.get("name") or "")
+        media_label = html.escape(media_info.get("label") or "Media")
+        attachment_html = f"<a class=\"attachment\" href=\"{media_path}\" download>{media_label}: {media_name}</a>" if media_path else ""
         username = html.escape(item.get("username") or "")
         username_html = f"<span>{username}</span>" if username else ""
         search_text = f"{item['author']} {item.get('username') or ''} {item['text']}".lower()
@@ -2048,6 +2116,7 @@ def build_chat_export_html(chat_title, scope_title, messages, users):
             f"{username_html}"
             "</div>"
             f"<p>{body}</p>"
+            f"{attachment_html}"
             f"<time>{when}</time>"
             "</div>"
             "</article>"
@@ -2102,6 +2171,8 @@ main {{ min-width: 0; padding: 18px 16px 46px; background: radial-gradient(circl
 .message-top span {{ color: rgb(143, 161, 176); font-size: 12px; }}
 .message time {{ float: right; color: rgb(121, 145, 164); font-size: 11px; margin: 5px 0 0 12px; }}
 .message p {{ margin: 0; line-height: 1.38; white-space: normal; overflow-wrap: anywhere; font-size: 14px; }}
+.attachment {{ display: block; width: fit-content; max-width: 100%; margin-top: 8px; padding: 7px 10px; border-radius: 8px; background: rgba(82, 176, 232, .14); color: rgb(125, 201, 247); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+.attachment:hover {{ background: rgba(82, 176, 232, .22); }}
 .empty {{ max-width: 860px; margin: 0 auto; padding: 18px; color: rgb(143, 161, 176); }}
 @media (max-width: 850px) {{ .topbar {{ grid-template-columns: 1fr; gap: 10px; }} .layout {{ grid-template-columns: 1fr; }} aside {{ position: static; height: auto; border-right: 0; border-bottom: 1px solid rgb(15, 23, 32); }} main {{ padding: 14px 10px 34px; }} .summary {{ grid-template-columns: 1fr; }} .bubble {{ max-width: calc(100vw - 72px); }} }}
 </style>
@@ -2199,20 +2270,36 @@ async def iter_export_messages(chat, selected_topic=None):
             yield message
 
 
-async def send_export_file(event, chat_title, scope_title, messages, users, partial=False):
+async def send_export_file(event, chat_title, scope_title, messages, users, partial=False, include_media=False, export_dir=None):
     content = build_chat_export_html(chat_title, scope_title, messages, users)
-    filename = safe_export_filename(chat_title)
-
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".html", delete=False) as tmp:
-        tmp.write(content)
-        tmp_path = Path(tmp.name)
-
-    final_path = tmp_path.with_name(filename)
-    tmp_path.replace(final_path)
-
+    base_name = safe_export_name(chat_title)
     caption_prefix = "Partial export" if partial else "Export"
+    final_path = None
 
     try:
+        if include_media:
+            package_dir = Path(export_dir) if export_dir else Path(tempfile.mkdtemp(prefix="topuser-export-"))
+            package_dir.mkdir(parents=True, exist_ok=True)
+            html_path = package_dir / "index.html"
+            html_path.write_text(content, encoding="utf-8")
+            final_path = package_dir.with_name(f"{base_name}.zip")
+
+            with zipfile.ZipFile(final_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.write(html_path, "index.html")
+                media_dir = package_dir / "media"
+
+                if media_dir.is_dir():
+                    for media_file in media_dir.rglob("*"):
+                        if media_file.is_file():
+                            archive.write(media_file, media_file.relative_to(package_dir).as_posix())
+        else:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".html", delete=False) as tmp:
+                tmp.write(content)
+                tmp_path = Path(tmp.name)
+
+            final_path = tmp_path.with_name(f"{base_name}.html")
+            tmp_path.replace(final_path)
+
         await client.send_file(
             event.chat_id,
             str(final_path),
@@ -2239,7 +2326,16 @@ async def send_export_snapshot(event, state, partial=True):
         users = {key: value.copy() for key, value in (state.get("users") or {}).items()}
         chat_title = state.get("chat_title") or "chat"
         scope_title = state.get("scope_title") or "full chat"
-        await send_export_file(event, chat_title, scope_title, messages, users, partial=partial)
+        await send_export_file(
+            event,
+            chat_title,
+            scope_title,
+            messages,
+            users,
+            partial=partial,
+            include_media=state.get("include_media", False),
+            export_dir=state.get("export_dir"),
+        )
 
         if partial:
             state["partial_sent"] = True
@@ -2248,9 +2344,9 @@ async def send_export_snapshot(event, state, partial=True):
 
 
 async def export_chat_html(event, raw_target=""):
-    target, target_text = export_target_from_text(raw_target, event.chat_id)
+    target, target_text, include_media = parse_export_options(raw_target, event.chat_id)
     selected_topic = topic_id(event) if not target_text else None
-    status = await event.reply(tg_code("Exporting chat..."))
+    status = await event.reply(tg_code("Exporting chat with media..." if include_media else "Exporting chat..."))
 
     try:
         chat = await client.get_entity(target)
@@ -2266,12 +2362,16 @@ async def export_chat_html(event, raw_target=""):
         scope_title = f"topic {selected_topic}" if selected_topic else "full chat"
         messages = []
         users = {}
+        export_dir = Path(tempfile.mkdtemp(prefix="topuser-export-")) if include_media else None
+        media_dir = export_dir / "media" if export_dir else None
         export_state = {
             "stop_event": stop_event,
             "messages": messages,
             "users": users,
             "chat_title": chat_title,
             "scope_title": scope_title,
+            "include_media": include_media,
+            "export_dir": export_dir,
             "lock": asyncio.Lock(),
             "partial_sent": False,
         }
@@ -2310,6 +2410,7 @@ async def export_chat_html(event, raw_target=""):
                 users[sender_id] = {"name": author, "username": username, "count": 0, "avatar": avatar}
 
             users[sender_id]["count"] += 1
+            media_info = await export_message_media(message, media_dir) if include_media and media_dir else None
             messages.append({
                 "date": getattr(message, "date", None),
                 "author": author,
@@ -2317,10 +2418,12 @@ async def export_chat_html(event, raw_target=""):
                 "text": text,
                 "user_id": sender_id,
                 "avatar": users[sender_id].get("avatar", ""),
+                "media": media_info,
             })
 
             if len(messages) % 2000 == 0:
-                await status.edit(tg_code(f"Exporting chat... {len(messages)} messages"))
+                mode = " with media" if include_media else ""
+                await status.edit(tg_code(f"Exporting chat{mode}... {len(messages)} messages"))
 
         if cancelled:
             if export_state.get("partial_sent"):
@@ -2349,6 +2452,9 @@ async def export_chat_html(event, raw_target=""):
 
             if active_stop is stop_event:
                 ACTIVE_EXPORTS.pop(active_key, None)
+
+        if "export_dir" in locals() and export_dir:
+            shutil.rmtree(export_dir, ignore_errors=True)
 
 
 async def cancel_chat_export(event, raw_target=""):
