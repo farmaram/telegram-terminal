@@ -142,7 +142,7 @@ Chat
 .cl                   delete your messages in this chat/topic
 ```
 
-`.exportchat` creates a Telegram-style dark HTML archive with chat bubbles, messages grouped by day, a user menu, and search/filter controls. It works in normal groups and topic groups. `.cancelexport` stops the running export and immediately sends the partial HTML collected so far.
+`.exportchat` creates a Telegram-style dark HTML archive with chat bubbles, a top search bar, the chat/group name, low-quality user avatars, messages grouped by day, and user filters. It works in normal groups and topic groups. `.cancelexport` stops the running export and immediately sends the partial HTML collected so far.
 
 Generated `.q`, `.144p`, `.download`, `.exportchat`, and API shortcut fallback files are deleted after they are sent to Telegram.
 

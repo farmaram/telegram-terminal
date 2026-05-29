@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import html
 import json
 import types
@@ -111,6 +112,7 @@ client = TelegramClient(SESSION_NAME, api_id, api_hash)
 AVATAR_CACHE = {}
 ACTIVE_SPAMS = {}
 ACTIVE_EXPORTS = {}
+EXPORT_AVATAR_CACHE = {}
 VEGADATA_CHANNEL_ID = "UCd2FHKnQ3ymrNhdsV9J0VmA"
 VEGADATA_CHANNEL_URL = "https://youtube.com/@vegadata"
 VEGADATA_COUNTER_URL = f"https://mixerno.space/api/youtube-channel-counter/user/{VEGADATA_CHANNEL_ID}"
@@ -738,6 +740,36 @@ async def send_vegadata(event):
         await status.edit(tg_code(f".vegadata failed: {e}"))
     finally:
         cleanup_files(path)
+
+
+async def get_export_avatar_data(sender, name, size=36):
+    sender_id = getattr(sender, "id", None) or name or "unknown"
+    cache_key = (sender_id, size)
+
+    if cache_key in EXPORT_AVATAR_CACHE:
+        return EXPORT_AVATAR_CACHE[cache_key]
+
+    QUOTE_DIR.mkdir(parents=True, exist_ok=True)
+    avatar_path = QUOTE_DIR / f"export-avatar-{sender_id}.jpg"
+    data_uri = ""
+
+    try:
+        downloaded = await client.download_profile_photo(sender, file=str(avatar_path)) if sender else None
+
+        if downloaded and Path(downloaded).is_file():
+            image = Image.open(downloaded).convert("RGB")
+            image = ImageOps.fit(image, (size, size), method=Image.Resampling.LANCZOS)
+            buffer = BytesIO()
+            image.save(buffer, format="JPEG", quality=38, optimize=True)
+            encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+            data_uri = f"data:image/jpeg;base64,{encoded}"
+    except Exception as e:
+        print(f"Export avatar failed: {e}")
+    finally:
+        cleanup_files(avatar_path)
+
+    EXPORT_AVATAR_CACHE[cache_key] = data_uri
+    return data_uri
 
 
 async def get_sender_avatar(sender, name, size=104):
@@ -1947,11 +1979,13 @@ def build_chat_export_html(chat_title, scope_title, messages, users):
         username = f"@{user['username']}" if user.get("username") else "No username"
         search_text = f"{user['name']} {username}".lower()
         initials = html.escape(export_initials(user['name']))
+        avatar = html.escape(user.get("avatar") or "", quote=True)
+        avatar_html = f"<img src=\"{avatar}\" alt=\"\">" if avatar else initials
         user_items.append(
             "<button class=\"user-item\" type=\"button\" "
             f"data-user=\"{html.escape(str(user_id), quote=True)}\" "
             f"data-search=\"{html.escape(search_text, quote=True)}\">"
-            f"<i>{initials}</i>"
+            f"<i>{avatar_html}</i>"
             "<span>"
             f"<b>{html.escape(user['name'])}</b>"
             f"<small>{html.escape(username)}</small>"
@@ -1977,11 +2011,13 @@ def build_chat_export_html(chat_title, scope_title, messages, users):
         username_html = f"<span>{username}</span>" if username else ""
         search_text = f"{item['author']} {item.get('username') or ''} {item['text']}".lower()
         initials = html.escape(export_initials(item['author']))
+        avatar = html.escape(item.get("avatar") or "", quote=True)
+        avatar_html = f"<img src=\"{avatar}\" alt=\"\">" if avatar else initials
         message_rows.append(
             "<article class=\"message\" "
             f"data-user=\"{html.escape(str(item.get('user_id') or ''), quote=True)}\" "
             f"data-search=\"{html.escape(search_text, quote=True)}\">"
-            f"<div class=\"avatar\">{initials}</div>"
+            f"<div class=\"avatar\">{avatar_html}</div>"
             "<div class=\"bubble\">"
             "<div class=\"message-top\">"
             f"<strong>{author}</strong>"
@@ -2005,22 +2041,25 @@ def build_chat_export_html(chat_title, scope_title, messages, users):
 :root {{ color-scheme: dark; }}
 * {{ box-sizing: border-box; }}
 body {{ margin: 0; background: rgb(14, 22, 33); color: rgb(232, 235, 239); font-family: Arial, Helvetica, sans-serif; }}
-header {{ background: rgb(23, 33, 43); color: white; padding: 18px 24px; border-bottom: 1px solid rgb(15, 23, 32); position: sticky; top: 0; z-index: 5; }}
-header h1 {{ margin: 0 0 5px; font-size: 22px; font-weight: 700; }}
-header p {{ margin: 0; color: rgb(143, 161, 176); font-size: 13px; }}
-.layout {{ display: grid; grid-template-columns: 330px minmax(0, 1fr); min-height: calc(100vh - 74px); }}
-aside {{ border-right: 1px solid rgb(15, 23, 32); background: rgb(23, 33, 43); padding: 14px; position: sticky; top: 74px; height: calc(100vh - 74px); overflow: auto; }}
+header {{ background: rgb(23, 33, 43); color: white; padding: 10px 16px; border-bottom: 1px solid rgb(15, 23, 32); position: sticky; top: 0; z-index: 5; }}
+.topbar {{ display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 430px); gap: 16px; align-items: center; }}
+.chat-title {{ min-width: 0; }}
+header h1 {{ margin: 0 0 3px; font-size: 18px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+header p {{ margin: 0; color: rgb(143, 161, 176); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+.layout {{ display: grid; grid-template-columns: 330px minmax(0, 1fr); min-height: calc(100vh - 61px); }}
+aside {{ border-right: 1px solid rgb(15, 23, 32); background: rgb(23, 33, 43); padding: 14px; position: sticky; top: 61px; height: calc(100vh - 61px); overflow: auto; }}
 main {{ min-width: 0; padding: 18px 16px 46px; background: radial-gradient(circle at top left, rgba(42, 82, 112, .26), transparent 380px), rgb(14, 22, 33); }}
 .summary {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; max-width: 860px; margin: 0 auto 16px; }}
 .summary div {{ background: rgba(23, 33, 43, .92); border: 1px solid rgba(91, 188, 255, .13); border-radius: 6px; padding: 12px 14px; }}
 .summary b {{ display: block; font-size: 21px; margin-bottom: 2px; }}
 .summary span {{ color: rgb(143, 161, 176); font-size: 13px; }}
-.search {{ width: 100%; border: 1px solid rgb(45, 61, 76); background: rgb(36, 47, 61); color: rgb(232, 235, 239); border-radius: 999px; padding: 11px 14px; outline: none; margin-bottom: 12px; }}
+.search {{ width: 100%; border: 1px solid rgb(45, 61, 76); background: rgb(36, 47, 61); color: rgb(232, 235, 239); border-radius: 999px; padding: 11px 14px; outline: none; }}
 .search:focus {{ border-color: rgb(82, 176, 232); }}
 .user-list {{ display: grid; gap: 4px; }}
 .user-item {{ width: 100%; display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 10px; border: 0; background: transparent; color: inherit; border-radius: 8px; padding: 8px; cursor: pointer; text-align: left; }}
 .user-item:hover, .user-item.active {{ background: rgb(42, 57, 72); }}
-.user-item i, .avatar {{ width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; background: linear-gradient(135deg, rgb(61, 151, 216), rgb(46, 185, 137)); color: white; font-style: normal; font-size: 13px; font-weight: 700; flex: 0 0 auto; }}
+.user-item i, .avatar {{ width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; background: linear-gradient(135deg, rgb(61, 151, 216), rgb(46, 185, 137)); color: white; font-style: normal; font-size: 13px; font-weight: 700; flex: 0 0 auto; overflow: hidden; }}
+.user-item img, .avatar img {{ width: 100%; height: 100%; display: block; object-fit: cover; }}
 .user-item span {{ min-width: 0; }}
 .user-item b, .user-item small {{ display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
 .user-item b {{ font-size: 14px; }}
@@ -2028,6 +2067,7 @@ main {{ min-width: 0; padding: 18px 16px 46px; background: radial-gradient(circl
 .user-item em {{ color: rgb(143, 161, 176); font-style: normal; font-size: 12px; }}
 .user-item.hidden, .message.hidden, .day.hidden {{ display: none; }}
 .filter-all {{ margin-bottom: 10px; }}
+.sidebar-title {{ color: rgb(143, 161, 176); font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; margin: 2px 8px 10px; }}
 .results {{ color: rgb(143, 161, 176); max-width: 860px; margin: 0 auto 14px; font-size: 13px; }}
 #messages {{ max-width: 860px; margin: 0 auto; }}
 .day {{ width: fit-content; color: rgb(207, 217, 226); background: rgba(54, 70, 84, .78); border-radius: 999px; font-size: 12px; font-weight: 700; margin: 18px auto 12px; padding: 6px 12px; }}
@@ -2039,17 +2079,22 @@ main {{ min-width: 0; padding: 18px 16px 46px; background: radial-gradient(circl
 .message time {{ float: right; color: rgb(121, 145, 164); font-size: 11px; margin: 5px 0 0 12px; }}
 .message p {{ margin: 0; line-height: 1.38; white-space: normal; overflow-wrap: anywhere; font-size: 14px; }}
 .empty {{ max-width: 860px; margin: 0 auto; padding: 18px; color: rgb(143, 161, 176); }}
-@media (max-width: 850px) {{ header {{ position: static; }} .layout {{ grid-template-columns: 1fr; }} aside {{ position: static; height: auto; border-right: 0; border-bottom: 1px solid rgb(15, 23, 32); }} main {{ padding: 14px 10px 34px; }} .summary {{ grid-template-columns: 1fr; }} .bubble {{ max-width: calc(100vw - 72px); }} }}
+@media (max-width: 850px) {{ header {{ position: static; }} .topbar {{ grid-template-columns: 1fr; gap: 10px; }} .layout {{ grid-template-columns: 1fr; }} aside {{ position: static; height: auto; border-right: 0; border-bottom: 1px solid rgb(15, 23, 32); }} main {{ padding: 14px 10px 34px; }} .summary {{ grid-template-columns: 1fr; }} .bubble {{ max-width: calc(100vw - 72px); }} }}
 </style>
 </head>
 <body>
 <header>
+<div class=\"topbar\">
+<div class=\"chat-title\">
 <h1>{heading}</h1>
-<p>{scope} - exported at {generated}</p>
+<p>{scope} - {total_messages} messages - {total_users} users - exported at {generated}</p>
+</div>
+<input id=\"search\" class=\"search\" type=\"search\" placeholder=\"Search users or messages\" autocomplete=\"off\">
+</div>
 </header>
 <div class=\"layout\">
 <aside>
-<input id=\"search\" class=\"search\" type=\"search\" placeholder=\"Search users or messages\" autocomplete=\"off\">
+<div class=\"sidebar-title\">Users</div>
 <button id=\"allUsers\" class=\"user-item filter-all active\" type=\"button\" data-user=\"\"><i>All</i><span><b>All users</b><small>Full export</small></span><em>{total_messages}</em></button>
 <div id=\"users\" class=\"user-list\">{users_html}</div>
 </aside>
@@ -2237,7 +2282,8 @@ async def export_chat_html(event, raw_target=""):
                 continue
 
             if sender_id not in users:
-                users[sender_id] = {"name": author, "username": username, "count": 0}
+                avatar = await get_export_avatar_data(sender, author)
+                users[sender_id] = {"name": author, "username": username, "count": 0, "avatar": avatar}
 
             users[sender_id]["count"] += 1
             messages.append({
@@ -2246,6 +2292,7 @@ async def export_chat_html(event, raw_target=""):
                 "username": f"@{username}" if username else "",
                 "text": text,
                 "user_id": sender_id,
+                "avatar": users[sender_id].get("avatar", ""),
             })
 
             if len(messages) % 2000 == 0:
