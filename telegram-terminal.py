@@ -636,13 +636,54 @@ TERMINAL_PALETTE = {
     "brightwhite": (255, 255, 255),
 }
 
-FONT_PATHS = [
-    BASE_DIR / "assets/fonts/DejaVuSansMono.ttf",
-    "assets/fonts/DejaVuSansMono.ttf",
-    "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-    "/usr/share/fonts/truetype/liberation2/LiberationMono-Regular.ttf",
+TERMINAL_FONT_NAMES = [
+    "DejaVuSansMono.ttf",
+    "NotoSansMono-Regular.ttf",
+    "LiberationMono-Regular.ttf",
+    "Courier New.ttf",
+    "Menlo.ttc",
+    "Monaco.ttf",
+    "Consola.ttf",
 ]
+
+
+def terminal_font_candidates():
+    explicit_font = os.environ.get("TOPUSER_TERMINAL_FONT", "").strip()
+
+    if explicit_font:
+        yield Path(explicit_font).expanduser()
+
+    for name in TERMINAL_FONT_NAMES:
+        yield name
+
+    roots = [BASE_DIR, Path.cwd()]
+    env_dir = os.environ.get("TOPUSER_FONT_DIR", "").strip()
+
+    if env_dir:
+        roots.insert(0, Path(env_dir).expanduser())
+
+    for root in roots:
+        for folder in (root / "assets" / "fonts", root / "fonts", root):
+            for name in TERMINAL_FONT_NAMES:
+                yield folder / name
+
+    system_dirs = [
+        Path("/usr/share/fonts/truetype/dejavu"),
+        Path("/usr/share/fonts/truetype/noto"),
+        Path("/usr/share/fonts/truetype/liberation2"),
+        Path("/usr/local/share/fonts"),
+        Path("/system/fonts"),
+        Path("/data/data/com.termux/files/usr/share/fonts/TTF"),
+        Path("/data/data/com.termux/files/usr/share/fonts"),
+        Path("/Library/Fonts"),
+        Path("/System/Library/Fonts"),
+        Path.home() / "Library" / "Fonts",
+        Path("C:/Windows/Fonts"),
+    ]
+
+    for folder in system_dirs:
+        for name in TERMINAL_FONT_NAMES:
+            yield folder / name
 
 TERMUX_PILLOW_FREETYPE_HELP = (
     "TrueType fonts unavailable; screenshots will use Pillow's default font.\n"
@@ -713,12 +754,26 @@ def load_terminal_font(size):
     global truetype_warning_shown
 
     if truetype_available:
-        for font_path in FONT_PATHS:
-            if not Path(font_path).is_file():
+        seen = set()
+
+        for font_path in terminal_font_candidates():
+            key = str(font_path)
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+            candidate_path = Path(font_path).expanduser()
+
+            if candidate_path.is_file():
+                load_value = str(candidate_path)
+            elif isinstance(font_path, str) and not any(separator in font_path for separator in ("/", "\\")):
+                load_value = font_path
+            else:
                 continue
 
             try:
-                return ImageFont.truetype(str(font_path), size=size)
+                return ImageFont.truetype(load_value, size=size)
             except ImportError as e:
                 truetype_available = False
 
@@ -729,10 +784,13 @@ def load_terminal_font(size):
                 break
             except Exception as e:
                 if not truetype_warning_shown:
-                    print(f"Font load failed ({font_path}); using Pillow default font: {e}")
+                    print(f"Font load failed ({font_path}); trying another font: {e}")
                     truetype_warning_shown = True
 
-    return ImageFont.load_default()
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
 
 
 def font_bbox(font, text):
