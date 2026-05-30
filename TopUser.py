@@ -415,15 +415,11 @@ async def clean_url_message(event, raw):
 
 def startup_notice_text():
     return (
-        f"{TOPUSER_ASCII}\n\n"
-        "TopUser is online.\n\n"
-        "Personal userbot commands:\n"
-        "  .help  - open the TopUser command menu\n\n"
-        "Telegram Terminal commands:\n"
-        "  $help  - open the terminal command menu\n\n"
-        "Prefixes:\n"
-        "  . for TopUser\n"
-        "  $ for Telegram Terminal"
+        "TopUser is online\n"
+        "tigela.top\n\n"
+        ".help - TopUser command menu\n"
+        "$help - Telegram Terminal menu\n"
+        "Prefixes: . and $"
     )
 
 
@@ -527,6 +523,66 @@ def load_quote_font(size, bold=False):
     return ImageFont.load_default()
 
 
+def quote_mono_font_candidates(bold=False):
+    env_dir = os.environ.get("TOPUSER_FONT_DIR", "").strip()
+    roots = [Path.cwd(), Path(__file__).resolve().parent]
+    names = [
+        "DejaVuSansMono-Bold.ttf" if bold else "DejaVuSansMono.ttf",
+        "LiberationMono-Bold.ttf" if bold else "LiberationMono-Regular.ttf",
+        "NotoSansMono-Bold.ttf" if bold else "NotoSansMono-Regular.ttf",
+        "Courier New Bold.ttf" if bold else "Courier New.ttf",
+        "Menlo.ttc",
+        "Monaco.ttf",
+        "Consola.ttf",
+    ]
+
+    if env_dir:
+        roots.insert(0, Path(env_dir).expanduser())
+
+    for root in roots:
+        for folder in (root / "assets" / "fonts", root / "fonts", root):
+            for name in names:
+                yield folder / name
+
+    system_dirs = [
+        Path("/usr/share/fonts/truetype/dejavu"),
+        Path("/usr/share/fonts/truetype/liberation2"),
+        Path("/usr/share/fonts/truetype/noto"),
+        Path("/usr/local/share/fonts"),
+        Path("/system/fonts"),
+        Path("/data/data/com.termux/files/usr/share/fonts/TTF"),
+        Path("/data/data/com.termux/files/usr/share/fonts"),
+        Path("/Library/Fonts"),
+        Path("/System/Library/Fonts"),
+        Path.home() / "Library" / "Fonts",
+        Path("C:/Windows/Fonts"),
+    ]
+
+    for folder in system_dirs:
+        for name in names:
+            yield folder / name
+
+
+def load_mono_font(size, bold=False):
+    seen = set()
+
+    for candidate in quote_mono_font_candidates(bold):
+        key = str(candidate)
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+
+        if candidate.is_file():
+            try:
+                return ImageFont.truetype(str(candidate), size=size)
+            except Exception:
+                pass
+
+    return load_quote_font(size, bold=bold)
+
+
 def avatar_initials(name):
     parts = [p for p in re.split(r"\s+", name.strip()) if p]
 
@@ -586,6 +642,59 @@ def wrap_text_to_width(draw, text, font, max_width):
         lines.append(line)
 
     return "\n".join(lines).strip()
+
+
+def create_startup_notice_image():
+    DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    path = DOWNLOAD_DIR / "topuser-online.png"
+    width, height = 1200, 720
+    image = Image.new("RGB", (width, height), (9, 13, 20))
+    draw = ImageDraw.Draw(image)
+
+    for y in range(height):
+        blend = y / max(1, height - 1)
+        r = int(9 + 9 * blend)
+        g = int(13 + 18 * blend)
+        b = int(20 + 24 * blend)
+        draw.line((0, y, width, y), fill=(r, g, b))
+
+    panel = (54, 54, width - 54, height - 54)
+    draw.rounded_rectangle(panel, radius=30, fill=(15, 23, 35), outline=(53, 73, 97), width=2)
+    draw.rounded_rectangle((86, 86, 246, 132), radius=22, fill=(24, 126, 86))
+
+    label_font = load_quote_font(26, bold=True)
+    title_font = load_quote_font(78, bold=True)
+    site_font = load_quote_font(36, bold=True)
+    mono_font = load_mono_font(24, bold=True)
+    text_font = load_quote_font(27)
+
+    draw.text((116, 97), "ONLINE", font=label_font, fill=(221, 255, 238))
+    draw.text((86, 176), "TopUser", font=title_font, fill=(248, 250, 252))
+    draw.text((90, 268), "tigela.top", font=site_font, fill=(125, 211, 252))
+
+    ascii_box = (570, 112, 1114, 410)
+    draw.rounded_rectangle(ascii_box, radius=22, fill=(7, 11, 18), outline=(39, 56, 78), width=2)
+    ascii_width, ascii_height = multiline_size(draw, TOPUSER_ASCII, mono_font, spacing=6)
+    ascii_x = ascii_box[0] + ((ascii_box[2] - ascii_box[0] - ascii_width) // 2)
+    ascii_y = ascii_box[1] + ((ascii_box[3] - ascii_box[1] - ascii_height) // 2)
+    draw.multiline_text((ascii_x, ascii_y), TOPUSER_ASCII, font=mono_font, fill=(203, 213, 225), spacing=6)
+
+    lines = [
+        (".help", "TopUser command menu"),
+        ("$help", "Telegram Terminal menu"),
+        (".", "TopUser prefix"),
+        ("$", "Terminal prefix"),
+    ]
+    x, y = 92, 400
+
+    for command, description in lines:
+        draw.rounded_rectangle((x, y, x + 154, y + 46), radius=12, fill=(30, 41, 59))
+        draw.text((x + 20, y + 9), command, font=label_font, fill=(248, 250, 252))
+        draw.text((x + 184, y + 8), description, font=text_font, fill=(203, 213, 225))
+        y += 60
+
+    image.save(path, "PNG")
+    return path
 
 
 
@@ -1277,6 +1386,66 @@ def nayan_best_media_url(data):
     return urls[0][1]
 
 
+def collect_photo_urls(value, parent_key=""):
+    urls = []
+
+    if isinstance(value, dict):
+        for key, item in value.items():
+            child_key = f"{parent_key}.{key}" if parent_key else str(key)
+            urls.extend(collect_photo_urls(item, child_key.lower()))
+    elif isinstance(value, list):
+        for item in value:
+            urls.extend(collect_photo_urls(item, parent_key))
+    elif isinstance(value, str):
+        text = value.strip()
+
+        if text.startswith(("http://", "https://")):
+            lower_full = text.lower()
+            lower = lower_full.split("?", 1)[0]
+            key = parent_key.lower()
+            score = 0
+
+            if lower.endswith((".jpg", ".jpeg", ".png", ".webp")):
+                score += 8
+
+            if any(marker in lower_full for marker in ("mime=image", "mime%3dimage", "type=image", "image/")):
+                score += 8
+
+            if any(word in key for word in ("image", "images", "photo", "photos", "picture", "slide", "slides")):
+                score += 6
+
+            if any(word in key or word in lower for word in ("thumb", "thumbnail", "cover", "avatar", "profile")):
+                score -= 5
+
+            if any(word in key for word in ("audio", "music", "video", "play")):
+                score -= 4
+
+            if score > 0:
+                urls.append((score, text))
+
+    return urls
+
+
+def nayan_photo_urls(data, limit=10):
+    urls = []
+    seen = set()
+
+    for _, url in sorted(collect_photo_urls(data), key=lambda item: item[0], reverse=True):
+        if url not in seen:
+            urls.append(url)
+            seen.add(url)
+
+        if len(urls) >= limit:
+            break
+
+    return urls
+
+
+def nayan_photo_slideshow_url(source_url):
+    host = clean_host(urlsplit(source_url).netloc)
+    return host_matches(host, "tiktok.com")
+
+
 def collect_audio_urls(value, parent_key=""):
     urls = []
 
@@ -1527,12 +1696,24 @@ def build_nayan_caption(data, source_url, audio_mode=False):
     return caption
 
 
+MEDIA_URL_SUFFIXES = {".mp4", ".mov", ".webm", ".mkv", ".mp3", ".m4a", ".aac", ".ogg", ".wav", ".opus"}
+PHOTO_URL_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+SAFE_REMOTE_SUFFIXES = MEDIA_URL_SUFFIXES | PHOTO_URL_SUFFIXES
+
+
+def media_url_has_safe_suffix(url):
+    return Path(urlsplit(url).path).suffix.lower() in SAFE_REMOTE_SUFFIXES
+
+
 def download_remote_media(url, output_dir, filename="video.mp4"):
     output_dir.mkdir(parents=True, exist_ok=True)
-    suffix = Path(urlsplit(url).path).suffix
+    suffix = Path(urlsplit(url).path).suffix.lower()
 
-    if suffix and len(suffix) <= 8:
-        filename = f"video{suffix}"
+    if suffix in MEDIA_URL_SUFFIXES:
+        stem = "audio" if suffix in {".mp3", ".m4a", ".aac", ".ogg", ".wav", ".opus"} else "video"
+        filename = f"{stem}{suffix}"
+    elif suffix in PHOTO_URL_SUFFIXES:
+        filename = f"photo{suffix}"
 
     path = output_dir / filename
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"}, method="GET")
@@ -1563,12 +1744,42 @@ async def nayan_download_link(event, raw_options="", command_name="video"):
     output_dir = DOWNLOAD_DIR / f"nayan-{stamp}"
     status = await event.reply(tg_code("fetching audio..." if audio_mode else "fetching video..."))
     downloaded_path = None
+    downloaded_paths = []
 
     try:
         if audio_mode:
             data = await asyncio.to_thread(fetch_nayan_audio_response, command_name, url)
         else:
             data = await asyncio.to_thread(fetch_nayan_response, endpoint, url)
+
+        caption = build_nayan_caption(data, url, audio_mode)
+
+        if not audio_mode and nayan_photo_slideshow_url(url):
+            photo_urls = nayan_photo_urls(data)
+
+            if len(photo_urls) >= 2:
+                await status.edit(tg_code("sending photos..."))
+                files = []
+
+                for index, photo_url in enumerate(photo_urls, start=1):
+                    if media_url_has_safe_suffix(photo_url):
+                        files.append(photo_url)
+                    else:
+                        photo_path = await asyncio.to_thread(download_remote_media, photo_url, output_dir, f"photo-{index}.jpg")
+                        downloaded_paths.append(photo_path)
+                        files.append(str(photo_path))
+
+                await client.send_file(
+                    event.chat_id,
+                    files,
+                    caption=caption,
+                    parse_mode="html",
+                    force_document=False,
+                    reply_to=topic_reply_to(event),
+                )
+                await status.delete()
+                log(f".{command_name} sent TikTok slideshow in chat {event.chat_id}: {len(files)} photos")
+                return
 
         media_url = nayan_best_audio_url(data) if audio_mode else nayan_best_media_url(data)
 
@@ -1579,9 +1790,10 @@ async def nayan_download_link(event, raw_options="", command_name="video"):
                 await status.edit(tg_code("API did not return a downloadable video URL for this link."))
             return
 
-        caption = build_nayan_caption(data, url, audio_mode)
-
         try:
+            if not media_url_has_safe_suffix(media_url):
+                raise ValueError("download URL has no safe media extension")
+
             await client.send_file(
                 event.chat_id,
                 media_url,
@@ -1609,6 +1821,10 @@ async def nayan_download_link(event, raw_options="", command_name="video"):
     finally:
         if downloaded_path:
             cleanup_files(downloaded_path)
+
+        for path in downloaded_paths:
+            cleanup_files(path)
+
         try:
             output_dir.rmdir()
         except OSError:
@@ -1642,6 +1858,9 @@ async def download_mp3(event, raw_options=""):
         caption = build_nayan_caption(data, url, audio_mode=True)
 
         try:
+            if not media_url_has_safe_suffix(audio_url):
+                raise ValueError("download URL has no safe media extension")
+
             await client.send_file(
                 event.chat_id,
                 audio_url,
@@ -3306,7 +3525,18 @@ async def main():
         await TELEGRAM_TERMINAL.start(client)
         log("telegram-terminal embedded")
 
-    await client.send_message("me", startup_notice_text())
+    startup_image = None
+
+    try:
+        startup_image = create_startup_notice_image()
+        await client.send_file("me", str(startup_image), caption=startup_notice_text(), force_document=False)
+    except Exception as e:
+        log(f"startup image notice failed: {e}")
+        await client.send_message("me", startup_notice_text())
+    finally:
+        if startup_image:
+            cleanup_files(startup_image)
+
     log("startup notice sent to Saved Messages")
     asyncio.create_task(local_cli_loop())
     await client.run_until_disconnected()
